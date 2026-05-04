@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kokoro Chat</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Workspace">
+        <header class="brand">
+          <div class="brand-mark">K</div>
+          <div>
+            <h1>Kokoro Chat</h1>
+            <p id="storeStatus">JSON store</p>
+          </div>
+        </header>
+
+        <section class="user-switch">
+          <div class="panel-title">
+            <label for="userSelect">User</label>
+            <div class="title-actions">
+              <button id="addUserBtn" class="icon-button" type="button" aria-label="New user" title="New user">
+                <span aria-hidden="true">+</span>
+              </button>
+              <button id="deleteUserBtn" class="icon-button ghost-button danger-icon" type="button" aria-label="Delete user" title="Delete user">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 7h14"></path><path d="M9 7V5h6v2"></path><path d="M8 10v8"></path><path d="M12 10v8"></path><path d="M16 10v8"></path><path d="M7 7l1 13h8l1-13"></path></svg>
+              </button>
+              <button id="refreshUsersBtn" class="icon-button ghost-button" type="button" aria-label="Refresh users" title="Refresh users">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"></path><path d="M20 4v6h-6"></path></svg>
+              </button>
+            </div>
+          </div>
+          <div class="inline-form">
+            <select id="userSelect"></select>
+          </div>
+        </section>
+
+        <div class="panel-title">
+          <span>Sessions</span>
+          <div class="title-actions">
+            <button id="addSessionBtn" class="icon-button" type="button" aria-label="New session" title="New session">
+              <span aria-hidden="true">+</span>
+            </button>
+            <button id="refreshSessionsBtn" class="icon-button ghost-button" type="button" aria-label="Refresh sessions" title="Refresh sessions">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"></path><path d="M20 4v6h-6"></path></svg>
+            </button>
+          </div>
+        </div>
+        <div id="sessionsList" class="list session-list" aria-live="polite"></div>
+      </aside>
+
+      <main class="chat-pane" aria-label="Chat">
+        <header class="chat-header">
+          <div class="current-context">
+            <p id="currentUserLabel">No user</p>
+            <h2 id="currentSessionTitle">No session</h2>
+          </div>
+        </header>
+
+        <section id="chatLog" class="chat-log" aria-live="polite"></section>
+
+        <form id="messageForm" class="composer">
+          <textarea id="messageInput" rows="3" placeholder="Message" required></textarea>
+          <button id="sendBtn" type="submit">Send</button>
+        </form>
+      </main>
+    </div>
+
+    <dialog id="userDialog" class="modal">
+      <form id="userForm" class="stack">
+        <header class="modal-header">
+          <h2>New user</h2>
+          <button class="icon-button ghost-button" type="button" data-close-dialog="userDialog" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </header>
+        <label for="usernameInput">Username</label>
+        <input id="usernameInput" name="username" autocomplete="username" placeholder="alice" required>
+        <label for="displayNameInput">Display name</label>
+        <input id="displayNameInput" name="displayName" placeholder="Alice">
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="userDialog">Cancel</button>
+          <button type="submit">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="deleteUserDialog" class="modal">
+      <form id="deleteUserForm" class="stack">
+        <header class="modal-header">
+          <h2>Delete user</h2>
+          <button class="icon-button ghost-button" type="button" data-close-dialog="deleteUserDialog" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </header>
+        <p id="deleteUserName" class="confirm-copy"></p>
+        <label class="check-row">
+          <input id="cascadeUserDelete" type="checkbox">
+          <span>Also delete this user's sessions and messages</span>
+        </label>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="deleteUserDialog">Cancel</button>
+          <button class="danger-button" type="submit">Delete</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="sessionDialog" class="modal">
+      <form id="sessionForm" class="stack">
+        <header class="modal-header">
+          <h2>New session</h2>
+          <button class="icon-button ghost-button" type="button" data-close-dialog="sessionDialog" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </header>
+        <label for="newSessionTitle">Title</label>
+        <input id="newSessionTitle" placeholder="Daily chat">
+        <label for="systemPromptInput">System prompt</label>
+        <textarea id="systemPromptInput" rows="5" placeholder="You are helpful."></textarea>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="sessionDialog">Cancel</button>
+          <button type="submit">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="editSessionDialog" class="modal">
+      <form id="editSessionForm" class="stack">
+        <header class="modal-header">
+          <h2>Edit session</h2>
+          <button class="icon-button ghost-button" type="button" data-close-dialog="editSessionDialog" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </header>
+        <label for="editSessionTitleInput">Session title</label>
+        <input id="editSessionTitleInput" placeholder="Session title" required>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="editSessionDialog">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="deleteSessionDialog" class="modal">
+      <form id="deleteSessionForm" class="stack">
+        <header class="modal-header">
+          <h2>Delete session</h2>
+          <button class="icon-button ghost-button" type="button" data-close-dialog="deleteSessionDialog" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </header>
+        <p id="deleteSessionName" class="confirm-copy"></p>
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="deleteSessionDialog">Cancel</button>
+          <button class="danger-button" type="submit">Delete</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

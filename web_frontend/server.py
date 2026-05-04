@@ -1,0 +1,249 @@
+"""Tiny HTTP server for the Kokoro web frontend."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from conversation.service import ConversationService
+
+STATIC_DIR = Path(__file__).resolve().parent
+
+
+class KokoroRequestHandler(BaseHTTPRequestHandler):
+    service: ConversationService
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            self._handle_api("GET", parsed.path, parse_qs(parsed.query))
+            return
+        self._serve_static(parsed.path)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        self._handle_api("POST", parsed.path, parse_qs(parsed.query))
+
+    def do_PATCH(self) -> None:
+        parsed = urlparse(self.path)
+        self._handle_api("PATCH", parsed.path, parse_qs(parsed.query))
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        self._handle_api("DELETE", parsed.path, parse_qs(parsed.query))
+
+    def log_message(self, format: str, *args: Any) -> None:
+        print(f"{self.address_string()} - {format % args}")
+
+    def _handle_api(
+        self,
+        method: str,
+        path: str,
+        query: dict[str, list[str]],
+    ) -> None:
+        try:
+            payload = self._read_json() if method in {"POST", "PATCH"} else {}
+            response = self._route_api(method, path, query, payload)
+            self._send_json(response)
+        except ValueError as error:
+            self._send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+        except Exception as error:
+            self._send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _route_api(
+        self,
+        method: str,
+        path: str,
+        query: dict[str, list[str]],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if method == "GET" and path == "/api/health":
+            return {"ok": True}
+
+        if method == "GET" and path == "/api/users":
+            return {"users": [user.to_record() for user in self.service.list_users()]}
+
+        if method == "POST" and path == "/api/users":
+            username = self._require_text(payload, "username")
+            display_name = self._optional_text(payload, "display_name")
+            user = self.service.create_user(username, display_name=display_name)
+            return {"user": user.to_record()}
+
+        if method == "DELETE" and path.startswith("/api/users/"):
+            username = unquote(path.removeprefix("/api/users/"))
+            cascade = self._query_bool(query, "cascade")
+            return {"deleted": self.service.delete_user_by_username(username, cascade=cascade)}
+
+        if method == "GET" and path == "/api/sessions":
+            username = self._query_one(query, "username")
+            user_id = None
+            if username:
+                user = self.service.create_user(username)
+                user_id = user.id
+            sessions = self.service.list_sessions(user_id=user_id)
+            return {"sessions": [session.to_record() for session in sessions]}
+
+        if method == "POST" and path == "/api/sessions":
+            username = self._require_text(payload, "username")
+            title = self._optional_text(payload, "title") or "New chat"
+            system_prompt = self._optional_text(payload, "system_prompt")
+            user = self.service.create_user(username)
+            session = self.service.start_session(
+                user_id=user.id,
+                title=title,
+                system_prompt=system_prompt,
+            )
+            return {"session": session.to_record()}
+
+        if method == "DELETE" and path == "/api/all":
+            return {"deleted": self.service.delete_all()}
+
+        session_messages_prefix = "/api/sessions/"
+        if path.startswith(session_messages_prefix):
+            suffix = path.removeprefix(session_messages_prefix)
+            parts = suffix.split("/")
+            session_id = unquote(parts[0])
+
+            if len(parts) == 1 and method == "PATCH":
+                title = self._require_text(payload, "title")
+                session = self.service.rename_session(session_id, title)
+                return {"session": session.to_record()}
+
+            if len(parts) == 1 and method == "DELETE":
+                return {"deleted": self.service.delete_session(session_id)}
+
+            if len(parts) == 2 and parts[1] == "messages" and method == "GET":
+                messages = self.service.get_transcript(session_id)
+                return {"messages": [message.to_record() for message in messages]}
+
+            if len(parts) == 2 and parts[1] == "messages" and method == "POST":
+                content = self._require_text(payload, "content")
+                username = self._optional_text(payload, "username")
+                user_id = None
+                if username:
+                    user = self.service.create_user(username)
+                    user_id = user.id
+                user_message, assistant_message = self.service.send_message(
+                    session_id=session_id,
+                    content=content,
+                    user_id=user_id,
+                )
+                return {
+                    "user_message": user_message.to_record(),
+                    "assistant_message": assistant_message.to_record(),
+                }
+
+        raise ValueError(f"Unsupported route: {method} {path}")
+
+    def _serve_static(self, request_path: str) -> None:
+        if request_path in {"", "/"}:
+            request_path = "/index.html"
+        relative = request_path.removeprefix("/")
+        file_path = (STATIC_DIR / relative).resolve()
+        if STATIC_DIR not in file_path.parents and file_path != STATIC_DIR:
+            self._send_json({"error": "Invalid static path"}, HTTPStatus.BAD_REQUEST)
+            return
+        if not file_path.exists() or not file_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        content_type = {
+            ".html": "text/html; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".svg": "image/svg+xml",
+        }.get(file_path.suffix, "application/octet-stream")
+
+        data = file_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length == 0:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("Request body must be a JSON object")
+        return data
+
+    def _send_json(
+        self,
+        payload: dict[str, Any],
+        status: HTTPStatus = HTTPStatus.OK,
+    ) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _query_one(self, query: dict[str, list[str]], key: str) -> str | None:
+        values = query.get(key)
+        if not values:
+            return None
+        value = values[0].strip()
+        return value or None
+
+    def _query_bool(self, query: dict[str, list[str]], key: str) -> bool:
+        value = (self._query_one(query, key) or "").lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _require_text(self, payload: dict[str, Any], key: str) -> str:
+        value = self._optional_text(payload, key)
+        if not value:
+            raise ValueError(f"Missing required field: {key}")
+        return value
+
+    def _optional_text(self, payload: dict[str, Any], key: str) -> str | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Serve the Kokoro web frontend")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--env-file", default=str(ROOT_DIR / ".env"))
+    parser.add_argument("--data-dir", default=None)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    KokoroRequestHandler.service = ConversationService.default(
+        env_file=Path(args.env_file),
+        data_dir=Path(args.data_dir) if args.data_dir else None,
+    )
+    server = ThreadingHTTPServer((args.host, args.port), KokoroRequestHandler)
+    print(f"Serving Kokoro web frontend at http://{args.host}:{args.port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping server")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
+
