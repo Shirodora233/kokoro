@@ -56,6 +56,36 @@ def build_parser() -> argparse.ArgumentParser:
     transcript_parser = subparsers.add_parser("transcript", help="Print a session transcript")
     transcript_parser.add_argument("session_id")
 
+    history_parser = subparsers.add_parser(
+        "history",
+        help="Print paginated session history",
+    )
+    history_parser.add_argument("session_id")
+    history_parser.add_argument("--page", type=int, default=1)
+    history_parser.add_argument("--page-size", type=int, default=50)
+
+    context_parser = subparsers.add_parser(
+        "context",
+        help="Print the model context for a session",
+    )
+    context_parser.add_argument("session_id")
+
+    context_pointer_parser = subparsers.add_parser(
+        "set-context-start",
+        help="Set the session context start index",
+    )
+    context_pointer_parser.add_argument("session_id")
+    context_pointer_parser.add_argument("context_start_index", type=int)
+
+    query_parser = subparsers.add_parser(
+        "query",
+        help="Query session messages once database-backed search is available",
+    )
+    query_parser.add_argument("session_id")
+    query_parser.add_argument("query")
+    query_parser.add_argument("--page", type=int, default=1)
+    query_parser.add_argument("--page-size", type=int, default=50)
+
     chat_parser = subparsers.add_parser("chat", help="Start an interactive chat")
     chat_parser.add_argument("username")
     chat_parser.add_argument("--session-id")
@@ -73,6 +103,8 @@ def main() -> None:
     )
     try:
         run_command(args, service)
+    except NotImplementedError as error:
+        raise SystemExit(f"not implemented: {error}") from None
     except ValueError as error:
         raise SystemExit(f"error: {error}") from None
 
@@ -149,6 +181,52 @@ def run_command(args: argparse.Namespace, service: ConversationService) -> None:
 
     if args.command == "transcript":
         print(format_transcript(service.get_transcript(args.session_id)))
+        return
+
+    if args.command == "history":
+        page = service.get_session_history(
+            session_id=args.session_id,
+            page=args.page,
+            page_size=args.page_size,
+        )
+        print(
+            f"session_id={page.session_id} "
+            f"page={page.page}/{page.total_pages} "
+            f"total={page.total}"
+        )
+        print(format_transcript(page.messages))
+        return
+
+    if args.command == "context":
+        context = service.get_model_context(args.session_id)
+        print(
+            f"session_id={context.session_id} "
+            f"context_start_index={context.context_start_index} "
+            f"total_messages={context.total_messages}"
+        )
+        for message in context.messages:
+            print(f"{message['role']}: {message['content']}")
+        return
+
+    if args.command == "set-context-start":
+        session = service.set_context_start_index(
+            session_id=args.session_id,
+            context_start_index=args.context_start_index,
+        )
+        print(
+            f"session_id={session.id} "
+            f"context_start_index={session.context_start_index}"
+        )
+        return
+
+    if args.command == "query":
+        page = service.query_session_messages(
+            session_id=args.session_id,
+            query=args.query,
+            page=args.page,
+            page_size=args.page_size,
+        )
+        print(format_transcript(page.messages))
         return
 
     if args.command == "chat":

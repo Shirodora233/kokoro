@@ -61,6 +61,7 @@ class ChatSession:
     model: str | None = None
     temperature: float | None = None
     max_context_messages: int | None = None
+    context_start_index: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -75,6 +76,7 @@ class ChatSession:
         model: str | None = None,
         temperature: float | None = None,
         max_context_messages: int | None = None,
+        context_start_index: int = 0,
         metadata: dict[str, Any] | None = None,
     ) -> "ChatSession":
         now = utc_now()
@@ -86,6 +88,7 @@ class ChatSession:
             model=model,
             temperature=temperature,
             max_context_messages=max_context_messages,
+            context_start_index=context_start_index,
             metadata=metadata or {},
             created_at=now,
             updated_at=now,
@@ -142,4 +145,3 @@ class Message:
 
     def to_record(self) -> dict[str, Any]:
         return asdict(self)
-

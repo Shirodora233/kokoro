@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from session_management import ModelContext, PaginatedMessages, SessionManager
+
 from .config import LLMConfig, default_data_dir
 from .interfaces import ChatClient, ChatMessageParam, ConversationStore
 from .models import ChatSession, Message, User, utc_now
@@ -22,6 +24,7 @@ class ConversationService:
         self.store = store
         self.chat_client = chat_client
         self.config = config
+        self.sessions = SessionManager(store)
 
     @classmethod
     def default(
@@ -152,21 +155,47 @@ class ConversationService:
         self._require_session(session_id, allow_archived=True)
         return self.store.list_messages(session_id)
 
-    def _build_llm_context(self, session: ChatSession) -> list[ChatMessageParam]:
-        context: list[ChatMessageParam] = []
-        if session.system_prompt:
-            context.append({"role": "system", "content": session.system_prompt})
+    def get_session_history(
+        self,
+        session_id: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> PaginatedMessages:
+        return self.sessions.get_full_history(
+            session_id=session_id,
+            page=page,
+            page_size=page_size,
+        )
 
-        messages = self.store.list_messages(session.id)
-        max_messages = session.max_context_messages or self.config.max_context_messages
-        if max_messages <= 0:
-            messages = messages[-1:]
-        else:
-            messages = messages[-max_messages:]
-        for message in messages:
-            if message.role in {"system", "user", "assistant"}:
-                context.append({"role": message.role, "content": message.content})
-        return context
+    def get_model_context(self, session_id: str) -> ModelContext:
+        return self.sessions.get_model_context(session_id)
+
+    def set_context_start_index(
+        self,
+        session_id: str,
+        context_start_index: int,
+    ) -> ChatSession:
+        return self.sessions.set_context_start_index(
+            session_id=session_id,
+            context_start_index=context_start_index,
+        )
+
+    def query_session_messages(
+        self,
+        session_id: str,
+        query: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> PaginatedMessages:
+        return self.sessions.query_messages(
+            session_id=session_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+
+    def _build_llm_context(self, session: ChatSession) -> list[ChatMessageParam]:
+        return self.sessions.get_model_context(session.id).messages
 
     def _require_session(
         self,

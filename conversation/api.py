@@ -64,6 +64,45 @@ class DialogueAPI:
     def transcript(self, session_id: str) -> list[dict[str, Any]]:
         return [message.to_record() for message in self.service.get_transcript(session_id)]
 
+    def session_history(
+        self,
+        session_id: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        return self.service.get_session_history(
+            session_id=session_id,
+            page=page,
+            page_size=page_size,
+        ).to_record()
+
+    def model_context(self, session_id: str) -> dict[str, Any]:
+        return self.service.get_model_context(session_id).to_record()
+
+    def set_context_start_index(
+        self,
+        session_id: str,
+        context_start_index: int,
+    ) -> dict[str, Any]:
+        return self.service.set_context_start_index(
+            session_id=session_id,
+            context_start_index=context_start_index,
+        ).to_record()
+
+    def query_session_messages(
+        self,
+        session_id: str,
+        query: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        return self.service.query_session_messages(
+            session_id=session_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        ).to_record()
+
     def users(self) -> list[dict[str, Any]]:
         return [user.to_record() for user in self.service.list_users()]
 

@@ -55,6 +55,8 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json() if method in {"POST", "PATCH"} else {}
             response = self._route_api(method, path, query, payload)
             self._send_json(response)
+        except NotImplementedError as error:
+            self._send_json({"error": str(error)}, HTTPStatus.NOT_IMPLEMENTED)
         except ValueError as error:
             self._send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:
@@ -125,6 +127,37 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[1] == "messages" and method == "GET":
                 messages = self.service.get_transcript(session_id)
                 return {"messages": [message.to_record() for message in messages]}
+
+            if len(parts) == 2 and parts[1] == "history" and method == "GET":
+                page = self.service.get_session_history(
+                    session_id=session_id,
+                    page=self._query_int(query, "page", 1),
+                    page_size=self._query_int(query, "page_size", 50),
+                )
+                return {"history": page.to_record()}
+
+            if len(parts) == 2 and parts[1] == "context" and method == "GET":
+                return {"context": self.service.get_model_context(session_id).to_record()}
+
+            if len(parts) == 2 and parts[1] == "context" and method == "PATCH":
+                context_start_index = int(payload.get("context_start_index", 0))
+                session = self.service.set_context_start_index(
+                    session_id=session_id,
+                    context_start_index=context_start_index,
+                )
+                return {"session": session.to_record()}
+
+            if len(parts) == 2 and parts[1] == "query" and method == "GET":
+                message_query = self._query_one(query, "q")
+                if not message_query:
+                    raise ValueError("Missing required query parameter: q")
+                page = self.service.query_session_messages(
+                    session_id=session_id,
+                    query=message_query,
+                    page=self._query_int(query, "page", 1),
+                    page_size=self._query_int(query, "page_size", 50),
+                )
+                return {"results": page.to_record()}
 
             if len(parts) == 2 and parts[1] == "messages" and method == "POST":
                 content = self._require_text(payload, "content")
@@ -205,6 +238,17 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
         value = (self._query_one(query, key) or "").lower()
         return value in {"1", "true", "yes", "on"}
 
+    def _query_int(
+        self,
+        query: dict[str, list[str]],
+        key: str,
+        default: int,
+    ) -> int:
+        value = self._query_one(query, key)
+        if value is None:
+            return default
+        return int(value)
+
     def _require_text(self, payload: dict[str, Any], key: str) -> str:
         value = self._optional_text(payload, key)
         if not value:
@@ -246,4 +290,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

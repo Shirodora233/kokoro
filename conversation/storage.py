@@ -46,6 +46,7 @@ TABLE_TEMPLATES: dict[str, dict[str, Any]] = {
             "model",
             "temperature",
             "max_context_messages",
+            "context_start_index",
             "metadata",
             "created_at",
             "updated_at",
