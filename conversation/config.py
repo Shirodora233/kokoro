@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 def _strip_optional_quotes(value: str) -> str:
@@ -70,9 +71,37 @@ class LLMConfig:
         )
 
 
+@dataclass(frozen=True)
+class StorageConfig:
+    backend: Literal["json", "postgres"]
+    database_url: str | None = None
+
+    @classmethod
+    def from_env(cls, env_file: str | Path = ".env") -> "StorageConfig":
+        file_values = load_env_file(env_file)
+
+        def read(name: str, default: str | None = None) -> str | None:
+            return os.getenv(name) or file_values.get(name) or default
+
+        database_url = (
+            read("CONVERSATION_DATABASE_URL")
+            or read("DATABASE_URL")
+            or read("POSTGRES_DATABASE_URL")
+        )
+        backend = (read("CONVERSATION_STORE") or "").lower()
+        if not backend:
+            backend = "postgres" if database_url else "json"
+        if backend not in {"json", "postgres"}:
+            raise RuntimeError("CONVERSATION_STORE must be either json or postgres")
+        if backend == "postgres" and not database_url:
+            raise RuntimeError(
+                "CONVERSATION_DATABASE_URL or DATABASE_URL is required for postgres storage"
+            )
+        return cls(backend=backend, database_url=database_url)
+
+
 def default_data_dir() -> Path:
     configured = os.getenv("CONVERSATION_DATA_DIR")
     if configured:
         return Path(configured)
     return Path(__file__).resolve().parent / "data"
-

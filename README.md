@@ -1,11 +1,12 @@
 # Kokoro Conversation System
 
-一个基于 OpenAI Python SDK 的持久化 LLM 对话系统。当前不接入数据库，而是用数据库标准设计把数据拆成 JSON 文档表：
+一个基于 OpenAI Python SDK 的持久化 LLM 对话系统。当前默认使用 PostgreSQL 持久化，并保留 JSON store 作为本地 fallback / 迁移来源：
 
 - `conversation/data/users.json`
 - `conversation/data/sessions.json`
 - `conversation/data/messages.json`
 - `conversation/data/schema.json`
+- `database/postgres/schema.sql`
 
 ## 配置
 
@@ -15,10 +16,46 @@
 LLM_API_KEY="..."
 LLM_BASE_URL="..."
 LLM_MODEL="..."
+CONVERSATION_STORE="postgres"
+CONVERSATION_DATABASE_URL="postgresql://kokoro:...@127.0.0.1:54330/kokoro"
 ```
 
 也支持 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL` 作为兼容字段。
 可从 `.env.example` 复制字段名后填入自己的配置。
+
+如果需要临时回退到 JSON 文档存储：
+
+```env
+CONVERSATION_STORE="json"
+```
+
+## PostgreSQL
+
+本地开发可以用 Docker 启动 PostgreSQL：
+
+```bash
+docker run -d --name kokoro-postgres \
+  -e POSTGRES_USER=kokoro \
+  -e POSTGRES_PASSWORD=<strong-password> \
+  -e POSTGRES_DB=kokoro \
+  -p 127.0.0.1:54330:5432 \
+  -v kokoro-postgres-data:/var/lib/postgresql/data \
+  postgres:16
+```
+
+从 JSON 表迁移到 PostgreSQL：
+
+```bash
+.venv/bin/python -m database.migrate_json_to_postgres --replace
+```
+
+也可以显式传入连接串：
+
+```bash
+.venv/bin/python -m database.migrate_json_to_postgres \
+  --database-url "postgresql://kokoro:<strong-password>@127.0.0.1:54330/kokoro" \
+  --replace
+```
 
 ## 使用
 

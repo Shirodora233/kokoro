@@ -7,7 +7,7 @@ from typing import Any
 
 from session_management import ModelContext, PaginatedMessages, SessionManager
 
-from .config import LLMConfig, default_data_dir
+from .config import LLMConfig, StorageConfig, default_data_dir
 from .interfaces import ChatClient, ChatMessageParam, ConversationStore
 from .models import ChatSession, Message, User, utc_now
 from .openai_client import OpenAIChatClient
@@ -33,7 +33,13 @@ class ConversationService:
         data_dir: str | Path | None = None,
     ) -> "ConversationService":
         config = LLMConfig.from_env(env_file)
-        store = JsonConversationStore(data_dir or default_data_dir())
+        storage_config = StorageConfig.from_env(env_file)
+        if storage_config.backend == "postgres":
+            from database import PostgresConversationStore
+
+            store = PostgresConversationStore(storage_config.database_url or "")
+        else:
+            store = JsonConversationStore(data_dir or default_data_dir())
         return cls(store=store, chat_client=OpenAIChatClient(config), config=config)
 
     def create_user(
