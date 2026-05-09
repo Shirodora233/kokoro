@@ -35,6 +35,11 @@
 
 - `Link`：用于连接任意对象。
 
+以及一层语义时间：
+
+- `MemoryTimeRef`：保存“前几周”“小时候”“很久很久以前”等时间表达及解析结果。
+- `MemoryTimeLink`：把时间表达连接到事件、属性、实体、描述或消息片段，并说明时间角色。
+
 以及一层检索索引：
 
 - `MemoryEmbedding`：用于后续向量检索和上下文构建。
@@ -46,6 +51,7 @@
 - `Entity / Property` 是知识层。
 - `Link` 是关联层。
 - `message_sections` 是证据层。
+- `MemoryTimeRef / MemoryTimeLink` 是时间解释层。
 - `MemoryEmbedding` 是检索层。
 
 ## 3. 原始来源层
@@ -88,9 +94,6 @@
   "source_message_section_ids": ["msgsec_001"],
   "created_at": "2026-05-08T08:31:00+09:00",
   "updated_at": "2026-05-08T08:31:00+09:00",
-  "occurred_at": "2026-05-08T07:50:00+09:00",
-  "valid_from": "2026-05-08T07:50:00+09:00",
-  "valid_to": null,
   "confidence": "high",
   "importance": "medium",
   "metadata": {
@@ -106,11 +109,8 @@
 | `title` | 高度概括，适合检索和展示 |
 | `summary` | 比标题更详细的摘要 |
 | `event_type` | 事件类型，例如 `incident`、`plan`、`conversation`、`preference_change` |
-| `occurred_at` | 事件实际发生时间 |
 | `created_at` | 记忆进入系统的时间 |
 | `updated_at` | 最近更新时间 |
-| `valid_from` | 事实开始生效时间 |
-| `valid_to` | 事实失效时间 |
 | `confidence` | 置信度，建议只用粗粒度 |
 | `importance` | 重要程度，用于长期保留 |
 
@@ -148,8 +148,6 @@
   "source_message_section_ids": ["msgsec_001"],
   "created_at": "2026-05-08T08:31:10+09:00",
   "updated_at": "2026-05-08T08:31:10+09:00",
-  "valid_from": "2026-05-08T07:50:00+09:00",
-  "valid_to": null,
   "confidence": "high",
   "importance": "low",
   "metadata": {
@@ -172,8 +170,6 @@
   "source_message_section_ids": ["msgsec_001"],
   "created_at": "2026-05-08T08:31:12+09:00",
   "updated_at": "2026-05-08T08:31:12+09:00",
-  "valid_from": "2026-05-08T07:00:00+09:00",
-  "valid_to": null,
   "confidence": "medium",
   "importance": "low"
 }
@@ -212,8 +208,6 @@
   "reason": "两条描述都涉及动物闯入铁路导致交通异常，可能属于同类事件。",
   "created_at": "2026-05-08T08:40:00+09:00",
   "updated_at": "2026-05-08T08:40:00+09:00",
-  "valid_from": "2026-05-08T08:40:00+09:00",
-  "valid_to": null,
   "confidence": "medium",
   "metadata": {
     "link_created_by": "llm",
@@ -331,8 +325,6 @@
   ],
   "created_at": "2026-05-08T09:00:00+09:00",
   "updated_at": "2026-05-08T09:00:00+09:00",
-  "valid_from": "2026-05-08T09:00:00+09:00",
-  "valid_to": null,
   "confidence": "high",
   "stability": "stable",
   "importance": "medium",
@@ -373,8 +365,6 @@
   ],
   "created_at": "2026-05-08T08:35:00+09:00",
   "updated_at": "2026-05-08T08:35:00+09:00",
-  "valid_from": "2026-05-08T08:35:00+09:00",
-  "valid_to": null,
   "confidence": "medium",
   "stability": "semi_stable",
   "importance": "low",
@@ -401,7 +391,7 @@
 当旧事实被新事实推翻时，不建议直接覆盖。更好的方式是：
 
 - 旧 `Property` 标记为 `invalidated`
-- 设置 `valid_to` 和 `invalidated_at`
+- 新增一条 `memory_time_refs`，并通过 `memory_time_links` 用 `valid_to` 或 `observed_at` 角色描述失效时间
 - 新建新的 `Property`
 - 用 `Link` 把两者连接起来，说明是 `corrects` 或 `contradicts`
 
@@ -412,42 +402,88 @@
   "id": "prop_001",
   "property_text": "用户喜欢苹果。",
   "status": "invalidated",
-  "valid_to": "2026-05-08T10:00:00+09:00",
-  "invalidated_at": "2026-05-08T10:00:00+09:00",
   "invalidated_by": "prop_003"
 }
 ```
 
 ## 8. 时间字段设计
 
-建议所有主要对象都统一支持以下时间字段：
+时间分成两类：
 
-- `created_at`
-- `updated_at`
-- `observed_at`
-- `occurred_at`
-- `valid_from`
-- `valid_to`
-- `invalidated_at`
-- `expired_at`
+1. 系统生命周期时间：数据库或系统行为产生的时间，例如 `created_at`、`updated_at`、`deleted_at`。这些字段保留在各自表里。
+2. 语义时间：用户表达、故事文本或记忆内容中的时间，例如“前几周”“小时候”“持续了一两年”“很久很久以前”。这些时间单独进入 `memory_time_refs`，再通过 `memory_time_links` 连接到 `Event`、`Description`、`Property`、`Link` 或 `Entity`。
 
-### 8.1 区别
+不要把语义时间直接塞进每张表的 `occurred_at`、`valid_from`、`valid_to`。这些表达经常是模糊的、相对的、持续性的，甚至不属于现实世界时间轴。
+
+语义时间不是各主表上的 JSON 字段。真正落库时应拆成 `memory_time_refs` 和 `memory_time_links`；需要返回给 API 或 LLM 时，可以在 service 层聚合成带时间信息的视图。
+
+### 8.1 系统时间
+
+系统时间建议保留：
 
 | 字段 | 含义 |
 | --- | --- |
-| `created_at` | 系统什么时候记录这条记忆 |
-| `observed_at` | 什么时候从用户那里观察到这条信息 |
-| `occurred_at` | 事件实际发生时间，仅 `Event` 常用 |
-| `valid_from` | 事实从什么时候开始有效 |
-| `valid_to` | 事实到什么时候不再有效 |
-| `invalidated_at` | 被新信息推翻的时间 |
-| `expired_at` | 因为太久没有使用而自然过期 |
+| `created_at` | 系统什么时候创建这条记录 |
+| `updated_at` | 系统什么时候最后更新这条记录 |
+| `deleted_at` | 系统什么时候软删除这条记录 |
 
-### 8.2 示例
+系统时间写入时也必须带时区。PostgreSQL 中可以使用 `TIMESTAMPTZ` 保存真实瞬间；如果需要按“当时记录时区”返回，还应在请求上下文或审计信息中保留时区名。
+
+### 8.2 语义时间
+
+语义时间由 `memory_time_refs` 表保存原始表达和解析结果。它支持：
+
+- 精确时间：`2026-05-09 20:00`
+- 模糊时间：`前几周`、`小时候`、`最近`
+- 持续时间：`持续了一两年`
+- 频率时间：`每周`、`经常`
+- 非现实/叙事时间：`很久很久以前`、`故事开头`、`第二纪元`
+
+语义时间再通过 `memory_time_links.time_role` 表达它对某个记忆对象的意义，例如：
+
+- `occurred_at`：事件发生时间
+- `observed_at`：用户说出或系统观察到该信息的时间
+- `valid_from`：事实开始有效
+- `valid_to`：事实不再有效
+- `duration`：持续时间
+- `deadline`：截止时间
+- `scheduled_for`：计划时间
+- `life_stage`：人生阶段
+- `recurrence`：频率
+- `narrative_time`：叙事时间
+
+### 8.3 时区
+
+真实世界时间写入时必须带时区，不能写裸时间。查询返回时，应返回：
+
+- UTC 标准时间。
+- 按记录时区还原后的本地时间。
+- IANA 时区名，例如 `Asia/Shanghai`。
+- 当时 UTC offset，例如 `+08:00`。
+
+`timezone` 和 `utc_offset` 不是一回事：
+
+- `timezone` 是一套时区规则，例如 `Asia/Shanghai`、`America/New_York`。
+- `utc_offset` 是某一具体时刻相对 UTC 的偏移，例如 `+08:00`、`-05:00`、`-04:00`。
+
+例如 `America/New_York` 在冬天可能是 `-05:00`，夏令时可能是 `-04:00`。同时保存两者可以在未来时区规则变化时仍保留当时记录的解释。
+
+### 8.4 非现实时间
+
+不是所有时间都能或都应该规范化成现实时间。比如：
+
+- `很久很久以前`
+- `故事开头`
+- `第二纪元`
+- `梦里那天`
+
+这类时间应设置 `time_domain = 'narrative'` 或 `time_domain = 'fictional'`，保留 `raw_text` 和 `narrative_position`，不要强行写入 `normalized_start` / `normalized_end`。
+
+### 8.5 示例
 
 “我以前喜欢苹果，但现在不喜欢了。”
 
-可以把旧 `Property` 失效掉，再写入新 `Property`。
+可以把旧 `Property` 标记为 `invalidated`，新建新的 `Property`，并用 `memory_time_refs` + `memory_time_links` 描述“以前”和“现在”对应的语义时间。
 
 ## 9. 置信度设计
 
@@ -490,7 +526,7 @@
 
 ## 11. PostgreSQL 落地表设计
 
-第一阶段建议只在当前 `users`、`sessions`、`messages` 之上新增记忆层表，不替换现有会话表。所有时间字段使用 `TIMESTAMPTZ`，结构化字段使用 `JSONB`。
+第一阶段建议只在当前 `users`、`sessions`、`messages` 之上新增记忆层表，不替换现有会话表。系统生命周期时间使用 `TIMESTAMPTZ`，结构化字段使用 `JSONB`。语义时间统一写入 `memory_time_refs`，并通过 `memory_time_links` 连接到各类记忆对象。
 
 ### 11.1 `message_sections`
 
@@ -523,14 +559,8 @@ CREATE TABLE memory_events (
     event_type TEXT,
     status TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
-    occurred_at TIMESTAMPTZ,
-    observed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    valid_from TIMESTAMPTZ,
-    valid_to TIMESTAMPTZ,
-    invalidated_at TIMESTAMPTZ,
-    expired_at TIMESTAMPTZ,
     merged_into_id TEXT REFERENCES memory_events(id) ON DELETE SET NULL,
     deleted_at TIMESTAMPTZ,
     deleted_reason TEXT,
@@ -552,14 +582,11 @@ CREATE TABLE memory_descriptions (
     description_type TEXT,
     status TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
-    observed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    valid_from TIMESTAMPTZ,
-    valid_to TIMESTAMPTZ,
-    invalidated_at TIMESTAMPTZ,
-    expired_at TIMESTAMPTZ,
     merged_into_id TEXT REFERENCES memory_descriptions(id) ON DELETE SET NULL,
+    deleted_at TIMESTAMPTZ,
+    deleted_reason TEXT,
     confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
     importance TEXT CHECK (importance IN ('high', 'medium', 'low')),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -601,15 +628,12 @@ CREATE TABLE memory_properties (
     status TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
     stability TEXT CHECK (stability IN ('stable', 'semi_stable', 'temporary')),
-    observed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    valid_from TIMESTAMPTZ,
-    valid_to TIMESTAMPTZ,
-    invalidated_at TIMESTAMPTZ,
-    expired_at TIMESTAMPTZ,
     invalidated_by TEXT REFERENCES memory_properties(id) ON DELETE SET NULL,
     merged_into_id TEXT REFERENCES memory_properties(id) ON DELETE SET NULL,
+    deleted_at TIMESTAMPTZ,
+    deleted_reason TEXT,
     confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
     importance TEXT CHECK (importance IN ('high', 'medium', 'low')),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -635,10 +659,8 @@ CREATE TABLE memory_links (
     confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    valid_from TIMESTAMPTZ,
-    valid_to TIMESTAMPTZ,
-    invalidated_at TIMESTAMPTZ,
-    expired_at TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ,
+    deleted_reason TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     UNIQUE (from_type, from_id, to_type, to_id, relation_type)
 );
@@ -663,7 +685,83 @@ CREATE TABLE memory_sources (
 );
 ```
 
-### 11.8 `memory_embeddings`
+### 11.8 `memory_time_refs`
+
+`memory_time_refs` 保存语义时间表达本身。真实时间必须记录时区；非现实时间保留叙事位置，不强行规范化。
+
+```sql
+CREATE TABLE memory_time_refs (
+    id TEXT PRIMARY KEY,
+    raw_text TEXT,
+    time_domain TEXT NOT NULL DEFAULT 'real_world'
+        CHECK (time_domain IN ('real_world', 'narrative', 'fictional', 'life_stage', 'unknown')),
+    time_kind TEXT NOT NULL
+        CHECK (time_kind IN ('instant', 'range', 'duration', 'recurrence', 'relative', 'vague')),
+    certainty TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (certainty IN ('exact', 'approximate', 'vague', 'unknown')),
+
+    anchor_at TIMESTAMPTZ,
+    anchor_timezone TEXT,
+    anchor_utc_offset TEXT,
+
+    normalized_start TIMESTAMPTZ,
+    normalized_end TIMESTAMPTZ,
+    normalized_timezone TEXT,
+    normalized_utc_offset TEXT,
+
+    duration_min NUMERIC,
+    duration_max NUMERIC,
+    duration_unit TEXT,
+    recurrence_rule TEXT,
+
+    calendar_system TEXT DEFAULT 'gregorian',
+    narrative_position TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+```
+
+字段说明：
+
+- `anchor_at` 是理解相对时间时使用的锚点，通常是用户消息的 `created_at` 或系统处理这句话的时间。
+- `anchor_timezone` 保存 IANA 时区名，例如 `Asia/Shanghai`、`America/New_York`。
+- `anchor_utc_offset` 保存记录当时的实际偏移，例如 `+08:00`、`-05:00`。
+- `normalized_start` / `normalized_end` 是在真实世界时间轴上解析出的范围，无法解析或不是现实时间时留空。
+- `normalized_timezone` / `normalized_utc_offset` 用于返回规范化结果时，还原当时记录时区下的本地时间。
+- `time_domain = 'narrative'` 或 `time_domain = 'fictional'` 时，可以只填写 `raw_text`、`narrative_position` 和 `metadata`，不填写 `normalized_start` / `normalized_end`。
+
+### 11.9 `memory_time_links`
+
+`memory_time_links` 负责把时间表达挂到任意记忆对象上，并说明这段时间的角色。
+
+```sql
+CREATE TABLE memory_time_links (
+    id TEXT PRIMARY KEY,
+    memory_type TEXT NOT NULL
+        CHECK (memory_type IN ('event', 'description', 'entity', 'property', 'link', 'message_section')),
+    memory_id TEXT NOT NULL,
+    time_ref_id TEXT NOT NULL REFERENCES memory_time_refs(id) ON DELETE CASCADE,
+    time_role TEXT NOT NULL
+        CHECK (time_role IN (
+            'occurred_at',
+            'observed_at',
+            'valid_from',
+            'valid_to',
+            'duration',
+            'deadline',
+            'scheduled_for',
+            'life_stage',
+            'recurrence',
+            'narrative_time'
+        )),
+    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (memory_type, memory_id, time_ref_id, time_role)
+);
+```
+
+### 11.10 `memory_embeddings`
 
 第一阶段可以先存 embedding 元信息和向量文本占位。真正启用向量检索时，建议安装 `pgvector`，把 `embedding` 改为 `vector(n)`。
 
@@ -691,7 +789,7 @@ CREATE TABLE memory_embeddings (
 
 - `message_sections(message_id, section_index)` 设置唯一约束。
 - `message_sections(session_id, created_at)`、`message_sections(user_id, created_at)` 建索引。
-- `memory_events(user_id, event_type, occurred_at)` 建索引。
+- `memory_events(user_id, event_type, status)` 建索引。
 - `memory_events(user_id, status, importance)` 建索引。
 - `memory_descriptions(event_id)`、`memory_descriptions(user_id, status)` 建索引。
 - `memory_entities(scope, user_id)`、`memory_entities(scope, session_id)` 建索引，用于限定候选实体范围。
@@ -699,9 +797,12 @@ CREATE TABLE memory_embeddings (
 - `memory_properties(user_id, status, importance)` 建索引。
 - `memory_links(from_type, from_id)` 和 `memory_links(to_type, to_id)` 建索引。
 - `memory_sources(memory_type, memory_id)` 和 `memory_sources(message_section_id)` 建索引。
+- `memory_time_refs(time_domain, time_kind, certainty)` 建索引。
+- `memory_time_refs(normalized_start, normalized_end)` 建索引，用于真实世界时间范围过滤。
+- `memory_time_links(memory_type, memory_id, time_role)` 和 `memory_time_links(time_ref_id)` 建索引。
 - `memory_embeddings(memory_type, memory_id)` 建索引。
 
-`memory_sources`、`memory_links`、`memory_embeddings` 这类多态引用表不能完全依赖数据库外键保证目标存在，必须在 repository/service 层做引用检查。需要强一致时，可以额外增加 `memory_objects` 注册表，把所有可引用对象统一登记后再建立外键。
+`memory_sources`、`memory_links`、`memory_time_links`、`memory_embeddings` 这类多态引用表不能完全依赖数据库外键保证目标存在，必须在 repository/service 层做引用检查。需要强一致时，可以额外增加 `memory_objects` 注册表，把所有可引用对象统一登记后再建立外键。
 
 ## 13. 图数据库映射
 
@@ -713,6 +814,7 @@ CREATE TABLE memory_embeddings (
 - `(:Description)`
 - `(:Entity)`
 - `(:Property)`
+- `(:TimeRef)`
 
 关系可以映射为：
 
@@ -724,9 +826,13 @@ CREATE TABLE memory_embeddings (
 - `(:Property)-[:DESCRIBES]->(:Entity)`
 - `(:Description)-[:MENTIONS]->(:Entity)`
 - `(:Event)-[:MENTIONS]->(:Entity)`
-- `(:Description)-[:RELATED_TO {relation_type, reason, confidence, created_at, valid_from, valid_to}]->(:Description)`
+- `(:Description)-[:RELATED_TO {relation_type, reason, confidence, created_at}]->(:Description)`
 - `(:Property)-[:DERIVED_FROM]->(:Event)`
 - `(:Property)-[:DERIVED_FROM]->(:Description)`
+- `(:Event)-[:HAS_TIME {time_role, confidence}]->(:TimeRef)`
+- `(:Description)-[:HAS_TIME {time_role, confidence}]->(:TimeRef)`
+- `(:Property)-[:HAS_TIME {time_role, confidence}]->(:TimeRef)`
+- `(:Entity)-[:HAS_TIME {time_role, confidence}]->(:TimeRef)`
 
 图数据库更适合：
 
@@ -741,7 +847,7 @@ CREATE TABLE memory_embeddings (
 - 事务更新
 - 状态管理
 - 时间过滤
-- 去重和审计
+- 语义合并审计
 
 ## 14. 一条完整示例
 
@@ -785,11 +891,8 @@ CREATE TABLE memory_embeddings (
   "user_id": "usr_001",
   "session_id": "ses_001",
   "status": "active",
-  "occurred_at": "2026-05-08T07:30:00+09:00",
   "created_at": "2026-05-08T08:31:00+09:00",
   "updated_at": "2026-05-08T08:31:00+09:00",
-  "valid_from": "2026-05-08T07:30:00+09:00",
-  "valid_to": null,
   "confidence": "high",
   "importance": "medium"
 }
@@ -893,14 +996,59 @@ CREATE TABLE memory_embeddings (
     ],
     "created_at": "2026-05-08T08:32:00+09:00",
     "updated_at": "2026-05-08T08:32:00+09:00",
-    "valid_from": "2026-05-08T08:32:00+09:00",
-    "valid_to": null,
     "confidence": "medium",
     "stability": "semi_stable",
     "importance": "low",
     "status": "active"
   }
 ]
+```
+
+### 14.6 TimeRefs 与 TimeLinks
+
+```json
+{
+  "time_refs": [
+    {
+      "id": "time_001",
+      "raw_text": "早上",
+      "time_domain": "real_world",
+      "time_kind": "vague",
+      "certainty": "vague",
+      "anchor_at": "2026-05-08T08:30:00+09:00",
+      "anchor_timezone": "Asia/Tokyo",
+      "anchor_utc_offset": "+09:00",
+      "normalized_start": "2026-05-08T06:00:00+09:00",
+      "normalized_end": "2026-05-08T10:00:00+09:00",
+      "normalized_timezone": "Asia/Tokyo",
+      "normalized_utc_offset": "+09:00"
+    },
+    {
+      "id": "time_002",
+      "raw_text": "经常",
+      "time_domain": "real_world",
+      "time_kind": "recurrence",
+      "certainty": "vague",
+      "recurrence_rule": null
+    }
+  ],
+  "time_links": [
+    {
+      "memory_type": "event",
+      "memory_id": "event_001",
+      "time_ref_id": "time_001",
+      "time_role": "occurred_at",
+      "confidence": "medium"
+    },
+    {
+      "memory_type": "description",
+      "memory_id": "desc_003",
+      "time_ref_id": "time_002",
+      "time_role": "recurrence",
+      "confidence": "medium"
+    }
+  ]
+}
 ```
 
 ## 15. 提取与更新流程
@@ -914,11 +1062,13 @@ CREATE TABLE memory_embeddings (
 5. 从 `Event` 中抽取多个 `Description`
 6. 抽取 `Entity`
 7. 从 `Description`、`Event` 和 `message_sections` 中抽取 `Property`
-8. 由 LLM 结合候选记忆、实体描述和来源片段判断是否已有相似 `Event` 或 `Property`
-9. 判断是补充、矛盾、修正还是过期
-10. 建立 `Link`
-11. 写入 `memory_sources`，保证所有记忆能追溯到 `message_sections`
-12. 按需写入或刷新 `memory_embeddings`
+8. 抽取语义时间表达，写入或复用 `memory_time_refs`
+9. 用 `memory_time_links` 把时间挂到对应 `Event`、`Description`、`Property`、`Entity` 或 `message_section`
+10. 由 LLM 结合候选记忆、实体描述和来源片段判断是否已有相似 `Event` 或 `Property`
+11. 判断是补充、矛盾、修正还是过期
+12. 建立 `Link`
+13. 写入 `memory_sources`，保证所有记忆能追溯到 `message_sections`
+14. 按需写入或刷新 `memory_embeddings`
 
 ## 16. 语义合并规则
 
@@ -927,7 +1077,7 @@ CREATE TABLE memory_embeddings (
 判断两个 `Event` 是否可能是同一事件，可以看：
 
 - 标题语义是否相似
-- `occurred_at` 是否接近
+- `occurred_at` 角色对应的 `memory_time_refs` 是否接近
 - 涉及实体是否相同
 - 地点是否相同或相近
 - 事件类型是否相同
@@ -978,6 +1128,8 @@ CREATE TABLE memory_embeddings (
 - `Property`
 - `Link`
 - `MemorySource`
+- `MemoryTimeRef`
+- `MemoryTimeLink`
 - `MemoryEmbedding`
 
 其中：
@@ -988,6 +1140,8 @@ CREATE TABLE memory_embeddings (
 - `Property` = 实体属性
 - `Link` = 任意对象之间的关系
 - `MemorySource` = 所有记忆的证据和推导来源
+- `MemoryTimeRef` = 语义时间表达及解析结果
+- `MemoryTimeLink` = 时间表达与记忆对象之间的角色关系
 - `MemoryEmbedding` = 后续检索和上下文构建的向量入口
 
 ## 18. 与当前项目的关系
