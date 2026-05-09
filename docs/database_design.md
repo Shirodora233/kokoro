@@ -1,6 +1,6 @@
 # 数据库设计文档：记忆模型
 
-本文档描述一套面向记忆系统的数据库设计。目标是把「发生过的事」「事件中的细节」「长期稳定事实」「实体之间的关系」分层存储，并且让每一条记忆都能追溯到当前会话系统中的 `messages.id`，以及由消息切分出的 `message_sections.id`。
+本文档描述一套面向记忆系统的数据库设计。目标是把「发生过的事」「事件中的细节」「长期稳定事实」「实体之间的关系」分层存储，并且让每一条记忆都能追溯到当前会话系统中的 `messages.id`。
 
 ## 1. 设计目标
 
@@ -11,13 +11,13 @@
 - `Entity` 负责记录被描述的对象。
 - `Property` 负责记录实体的长期或半长期事实。
 - `Link` 负责连接任意对象，并解释它们为什么有关。
-- 所有可入库的记忆都必须能追溯到至少一个 `message_sections.id`。
+- 所有可入库的记忆都必须能追溯到至少一个 `messages.id`。
 
 这样可以同时支持：
 
 - 一个 `Event` 拥有多个 `Description`。
 - 不同 `Description` 之间跨事件连接。
-- `Property` 来源于 `Event`、`Description` 和 `message_sections`。
+- `Property` 来源于 `Event`、`Description` 和 `messages`。
 - 一个 `Entity` 被多个 `Property` 描述。
 - 记忆的来源、推导过程和失效过程都可审计。
 
@@ -25,7 +25,7 @@
 
 建议把数据分成 5 层：
 
-1. `messages / message_sections`：原始来源层。
+1. `messages`：原始来源层。
 2. `Event`：大事件层。
 3. `Description`：事件细节层。
 4. `Entity`：实体层。
@@ -38,7 +38,7 @@
 以及一层语义时间：
 
 - `MemoryTimeRef`：保存“前几周”“小时候”“很久很久以前”等时间表达及解析结果。
-- `MemoryTimeLink`：把时间表达连接到事件、属性、实体、描述或消息片段，并说明时间角色。
+- `MemoryTimeLink`：把时间表达连接到事件、属性、实体、描述或消息，并说明时间角色。
 
 以及一层检索索引：
 
@@ -50,20 +50,22 @@
 - `Description` 是细节层。
 - `Entity / Property` 是知识层。
 - `Link` 是关联层。
-- `message_sections` 是证据层。
+- `messages` 是第一阶段证据层。
+- `message_sections` 是可选的细粒度证据层，等需要更精确引用时再引入。
 - `MemoryTimeRef / MemoryTimeLink` 是时间解释层。
 - `MemoryEmbedding` 是检索层。
 
 ## 3. 原始来源层
 
-当前项目已经有 `users`、`sessions`、`messages` 三张基础会话表，所以记忆系统第一阶段不再新增独立 `RawMessage` 表。原始消息直接复用 `messages.id`，记忆系统只新增 `message_sections` 表，用来保存从一条消息中切分出来的可引用片段。
+当前项目已经有 `users`、`sessions`、`messages` 三张基础会话表，所以记忆系统第一阶段不再新增独立 `RawMessage` 表。原始消息直接复用 `messages.id`，记忆来源先直接指向整条消息。
 
 这样做可以避免出现两套消息概念：
 
 - `messages.id`：完整原始消息。
-- `message_sections.id`：完整消息中的片段，用作记忆证据。
-- `message_sections.message_id`：外键指向 `messages(id)`。
-- `message_sections.session_id`、`message_sections.user_id`：冗余作用域字段，便于过滤和权限控制。
+- `messages.session_id`：外键指向 `sessions(id)`。
+- `messages.user_id`：消息所属用户，便于过滤和权限控制。
+
+如果后续发现一条消息里包含太多独立事实，可以再引入可选的 `message_sections` 或 `source_span`。第一阶段不强制切分，避免记忆系统刚开始就被 section 管理复杂度绑住。
 
 不要再使用含糊的 `raw_msg_id` 或 `conversation_id`。当前系统中等价概念分别是 `message_id` 和 `session_id`。
 
@@ -71,9 +73,9 @@
 
 建议约束：
 
-- `Event` 必须至少关联一个 `message_section_id`。
-- `Description` 必须至少关联一个 `message_section_id`。
-- `Property` 必须至少关联一个来源引用，来源可以是 `message_section`、`event` 或 `description`，但最终仍要能追溯到 `message_sections.id`。
+- `Event` 必须至少关联一个 `message_id`。
+- `Description` 必须至少关联一个 `message_id`。
+- `Property` 必须至少关联一个来源引用，来源可以是 `message`、`event` 或 `description`，但最终仍要能追溯到 `messages.id`。
 - `Link` 也应保留来源引用，便于解释为什么建立该连接。
 
 ## 4. Event 设计
@@ -91,7 +93,7 @@
   "user_id": "usr_001",
   "session_id": "ses_001",
   "status": "active",
-  "source_message_section_ids": ["msgsec_001"],
+  "source_message_ids": ["msg_001"],
   "created_at": "2026-05-08T08:31:00+09:00",
   "updated_at": "2026-05-08T08:31:00+09:00",
   "confidence": "high",
@@ -145,7 +147,7 @@
   "session_id": "ses_001",
   "content": "撞到的是鹿。",
   "description_type": "detail",
-  "source_message_section_ids": ["msgsec_001"],
+  "source_message_ids": ["msg_001"],
   "created_at": "2026-05-08T08:31:10+09:00",
   "updated_at": "2026-05-08T08:31:10+09:00",
   "confidence": "high",
@@ -167,7 +169,7 @@
   "session_id": "ses_001",
   "content": "这次电车延误发生在早上。",
   "description_type": "time_detail",
-  "source_message_section_ids": ["msgsec_001"],
+  "source_message_ids": ["msg_001"],
   "created_at": "2026-05-08T08:31:12+09:00",
   "updated_at": "2026-05-08T08:31:12+09:00",
   "confidence": "medium",
@@ -319,8 +321,8 @@
   "property_type": "preference",
   "source_refs": [
     {
-      "source_type": "message_section",
-      "source_id": "msgsec_010"
+      "source_type": "message",
+      "source_id": "msg_010"
     }
   ],
   "created_at": "2026-05-08T09:00:00+09:00",
@@ -359,8 +361,8 @@
       "source_id": "desc_004"
     },
     {
-      "source_type": "message_section",
-      "source_id": "msgsec_001"
+      "source_type": "message",
+      "source_id": "msg_001"
     }
   ],
   "created_at": "2026-05-08T08:35:00+09:00",
@@ -528,7 +530,9 @@
 
 第一阶段建议只在当前 `users`、`sessions`、`messages` 之上新增记忆层表，不替换现有会话表。系统生命周期时间使用 `TIMESTAMPTZ`，结构化字段使用 `JSONB`。语义时间统一写入 `memory_time_refs`，并通过 `memory_time_links` 连接到各类记忆对象。
 
-### 11.1 `message_sections`
+### 11.1 `message_sections`（可选）
+
+第一阶段可以不创建 `message_sections`。记忆来源先直接引用 `messages.id`；如果后续需要精确到句子或字符范围，再增加这张可选表。
 
 ```sql
 CREATE TABLE message_sections (
@@ -668,20 +672,27 @@ CREATE TABLE memory_links (
 
 ### 11.7 `memory_sources`
 
-统一来源表用来表达“某个记忆对象由哪些消息片段、事件或描述支持”。其中 `message_section_id` 是强外键，`source_type/source_id` 用于记录额外推导来源。
+统一来源表用来表达“某个记忆对象由哪些消息、事件或描述支持”。第一阶段 `message_id` 是主要证据外键；`message_section_id`、`span_start`、`span_end`、`evidence_text` 都是可选增强，用于需要更精确定位时再填。
 
 ```sql
 CREATE TABLE memory_sources (
     id TEXT PRIMARY KEY,
     memory_type TEXT NOT NULL CHECK (memory_type IN ('event', 'description', 'property', 'link')),
     memory_id TEXT NOT NULL,
+    message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
     message_section_id TEXT REFERENCES message_sections(id) ON DELETE CASCADE,
-    source_type TEXT CHECK (source_type IN ('message_section', 'event', 'description', 'property', 'link')),
+    source_type TEXT CHECK (source_type IN ('message', 'message_section', 'event', 'description', 'property', 'link')),
     source_id TEXT,
+    span_start INTEGER,
+    span_end INTEGER,
     evidence_text TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    CHECK (message_section_id IS NOT NULL OR (source_type IS NOT NULL AND source_id IS NOT NULL))
+    CHECK (
+        message_id IS NOT NULL
+        OR message_section_id IS NOT NULL
+        OR (source_type IS NOT NULL AND source_id IS NOT NULL)
+    )
 );
 ```
 
@@ -738,7 +749,7 @@ CREATE TABLE memory_time_refs (
 CREATE TABLE memory_time_links (
     id TEXT PRIMARY KEY,
     memory_type TEXT NOT NULL
-        CHECK (memory_type IN ('event', 'description', 'entity', 'property', 'link', 'message_section')),
+        CHECK (memory_type IN ('event', 'description', 'entity', 'property', 'link', 'message', 'message_section')),
     memory_id TEXT NOT NULL,
     time_ref_id TEXT NOT NULL REFERENCES memory_time_refs(id) ON DELETE CASCADE,
     time_role TEXT NOT NULL
@@ -768,7 +779,7 @@ CREATE TABLE memory_time_links (
 ```sql
 CREATE TABLE memory_embeddings (
     id TEXT PRIMARY KEY,
-    memory_type TEXT NOT NULL CHECK (memory_type IN ('event', 'description', 'entity', 'property', 'link', 'message_section')),
+    memory_type TEXT NOT NULL CHECK (memory_type IN ('event', 'description', 'entity', 'property', 'link', 'message', 'message_section')),
     memory_id TEXT NOT NULL,
     embedding_model TEXT NOT NULL,
     embedding_dimensions INTEGER,
@@ -796,7 +807,7 @@ CREATE TABLE memory_embeddings (
 - `memory_properties(entity_id, property_name, status)` 建复合索引。
 - `memory_properties(user_id, status, importance)` 建索引。
 - `memory_links(from_type, from_id)` 和 `memory_links(to_type, to_id)` 建索引。
-- `memory_sources(memory_type, memory_id)` 和 `memory_sources(message_section_id)` 建索引。
+- `memory_sources(memory_type, memory_id)`、`memory_sources(message_id)` 和 `memory_sources(message_section_id)` 建索引。
 - `memory_time_refs(time_domain, time_kind, certainty)` 建索引。
 - `memory_time_refs(normalized_start, normalized_end)` 建索引，用于真实世界时间范围过滤。
 - `memory_time_links(memory_type, memory_id, time_role)` 和 `memory_time_links(time_ref_id)` 建索引。
@@ -820,9 +831,12 @@ CREATE TABLE memory_embeddings (
 
 - `(:Message)-[:HAS_SECTION]->(:MessageSection)`
 - `(:Event)-[:HAS_DESCRIPTION]->(:Description)`
-- `(:Event)-[:SUPPORTED_BY]->(:MessageSection)`
-- `(:Description)-[:SUPPORTED_BY]->(:MessageSection)`
-- `(:Property)-[:SUPPORTED_BY]->(:MessageSection)`
+- `(:Event)-[:SUPPORTED_BY]->(:Message)`
+- `(:Description)-[:SUPPORTED_BY]->(:Message)`
+- `(:Property)-[:SUPPORTED_BY]->(:Message)`
+- `(:Event)-[:SUPPORTED_BY_SECTION]->(:MessageSection)`
+- `(:Description)-[:SUPPORTED_BY_SECTION]->(:MessageSection)`
+- `(:Property)-[:SUPPORTED_BY_SECTION]->(:MessageSection)`
 - `(:Property)-[:DESCRIBES]->(:Entity)`
 - `(:Description)-[:MENTIONS]->(:Entity)`
 - `(:Event)-[:MENTIONS]->(:Entity)`
@@ -855,29 +869,17 @@ CREATE TABLE memory_embeddings (
 
 > 早上电车撞鹿导致列车延误。听说这种事在那边经常发生，鹿会闯进轨道。
 
-### 14.1 MessageSection
+### 14.1 Message
 
 ```json
-[
-  {
-    "id": "msgsec_001",
-    "message_id": "msg_001",
-    "session_id": "ses_001",
-    "user_id": "usr_001",
-    "section_index": 0,
-    "section_text": "早上电车撞鹿导致列车延误。",
-    "created_at": "2026-05-08T08:30:00+09:00"
-  },
-  {
-    "id": "msgsec_002",
-    "message_id": "msg_001",
-    "session_id": "ses_001",
-    "user_id": "usr_001",
-    "section_index": 1,
-    "section_text": "听说这种事在那边经常发生，鹿会闯进轨道。",
-    "created_at": "2026-05-08T08:30:00+09:00"
-  }
-]
+{
+  "id": "msg_001",
+  "session_id": "ses_001",
+  "user_id": "usr_001",
+  "role": "user",
+  "content": "早上电车撞鹿导致列车延误。听说这种事在那边经常发生，鹿会闯进轨道。",
+  "created_at": "2026-05-08T08:30:00+09:00"
+}
 ```
 
 ### 14.2 Event
@@ -909,7 +911,7 @@ CREATE TABLE memory_embeddings (
     "session_id": "ses_001",
     "content": "电车撞到的是鹿。",
     "description_type": "detail",
-    "source_message_section_ids": ["msgsec_001"],
+    "source_message_ids": ["msg_001"],
     "confidence": "high"
   },
   {
@@ -919,7 +921,7 @@ CREATE TABLE memory_embeddings (
     "session_id": "ses_001",
     "content": "这件事导致列车延误。",
     "description_type": "result",
-    "source_message_section_ids": ["msgsec_001"],
+    "source_message_ids": ["msg_001"],
     "confidence": "high"
   },
   {
@@ -929,7 +931,7 @@ CREATE TABLE memory_embeddings (
     "session_id": "ses_001",
     "content": "这种鹿闯入轨道导致交通异常的事情在当地可能经常发生。",
     "description_type": "frequency",
-    "source_message_section_ids": ["msgsec_002"],
+    "source_message_ids": ["msg_001"],
     "confidence": "medium"
   }
 ]
@@ -990,8 +992,8 @@ CREATE TABLE memory_embeddings (
         "source_id": "desc_003"
       },
       {
-        "source_type": "message_section",
-        "source_id": "msgsec_002"
+        "source_type": "message",
+        "source_id": "msg_001"
       }
     ],
     "created_at": "2026-05-08T08:32:00+09:00",
@@ -1056,18 +1058,18 @@ CREATE TABLE memory_embeddings (
 建议系统每次收到新消息后按以下顺序处理：
 
 1. 保存当前会话系统的 `messages`
-2. 将 `messages` 切分为 `message_sections`
-3. 判断是否包含 `Event`
-4. 为 `Event` 生成 `title` 和 `summary`
-5. 从 `Event` 中抽取多个 `Description`
-6. 抽取 `Entity`
-7. 从 `Description`、`Event` 和 `message_sections` 中抽取 `Property`
-8. 抽取语义时间表达，写入或复用 `memory_time_refs`
-9. 用 `memory_time_links` 把时间挂到对应 `Event`、`Description`、`Property`、`Entity` 或 `message_section`
-10. 由 LLM 结合候选记忆、实体描述和来源片段判断是否已有相似 `Event` 或 `Property`
-11. 判断是补充、矛盾、修正还是过期
-12. 建立 `Link`
-13. 写入 `memory_sources`，保证所有记忆能追溯到 `message_sections`
+2. 判断 `messages` 是否包含 `Event`
+3. 为 `Event` 生成 `title` 和 `summary`
+4. 从 `Event` 中抽取多个 `Description`
+5. 抽取 `Entity`
+6. 从 `Description`、`Event` 和 `messages` 中抽取 `Property`
+7. 抽取语义时间表达，写入或复用 `memory_time_refs`
+8. 用 `memory_time_links` 把时间挂到对应 `Event`、`Description`、`Property`、`Entity` 或 `message`
+9. 由 LLM 结合候选记忆、实体描述和来源消息判断是否已有相似 `Event` 或 `Property`
+10. 判断是补充、矛盾、修正还是过期
+11. 建立 `Link`
+12. 写入 `memory_sources`，保证所有记忆能追溯到 `messages`
+13. 如果需要更精确证据，再可选切分并写入 `message_sections`
 14. 按需写入或刷新 `memory_embeddings`
 
 ## 16. 语义合并规则
@@ -1087,7 +1089,7 @@ CREATE TABLE memory_embeddings (
 - 不新建 `Event`
 - 更新原 `Event`
 - 追加 `Description`
-- 添加新的 `message_section` 来源
+- 添加新的 `message` 来源
 - 提高 `confidence`
 - 更新 `updated_at`
 
@@ -1121,7 +1123,8 @@ CREATE TABLE memory_embeddings (
 
 最精简但够用的版本是：
 
-- `MessageSection`
+- `Message`
+- `MessageSection`（可选）
 - `Event`
 - `Description`
 - `Entity`
@@ -1158,6 +1161,6 @@ CREATE TABLE memory_embeddings (
 
 - 保留现有对话表作为会话基础层
 - 另外增加本文中的记忆表
-- 通过 `session_id`、`message_id`、`message_section_id` 把两套系统串起来
+- 通过 `session_id`、`message_id` 把两套系统串起来；需要更细粒度来源时再使用可选的 `message_section_id`
 
 这样可以保持现有会话能力不变，同时逐步接入更强的长期记忆与知识抽取能力。
