@@ -1,4 +1,4 @@
-"""Interfaces for session management storage backends."""
+"""Interfaces for conversation context storage backends."""
 
 from __future__ import annotations
 
@@ -13,4 +13,3 @@ class SessionRepository(Protocol):
     def update_session(self, session: ChatSession) -> ChatSession: ...
 
     def list_messages(self, session_id: str) -> list[Message]: ...
-

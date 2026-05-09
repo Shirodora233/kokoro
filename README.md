@@ -165,14 +165,16 @@ reply = api.ask(session["id"], "你好")
 print(reply["assistant_message"]["content"])
 ```
 
-## 会话管理
+## 会话上下文
 
-会话管理已经抽象到和 `conversation` 平级的 `session_management/` 包，后续接入记忆管理系统时可以优先扩展这里：
+会话历史分页和大模型上下文窗口管理位于 `conversation/context/`。它属于对话系统内部能力，不作为记忆系统入口：
 
 - `SessionManager.get_full_history(...)`：分页获取某个 session 的完整聊天记录。
 - `SessionManager.get_model_context(...)`：按 `context_start_index` 指针返回需要提供给大模型的上下文。
 - `SessionManager.set_context_start_index(...)`：修改上下文起点指针。
 - `SessionManager.query_messages(...)`：预留查询接口，当前暂不实现。
+
+LLM provider 抽象位于 `llm/`，包括 `ChatClient`、`ChatMessageParam`、`LLMConfig` 和 `OpenAIChatClient`。后续 `conversation/` 和 `memory/` 都应该依赖 `llm/`，避免记忆系统反向依赖对话系统。
 
 HTTP 接口也已经暴露：
 

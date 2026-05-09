@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from conversation.interfaces import ChatMessageParam
 from conversation.models import ChatSession, Message
+from llm.interfaces import ChatMessageParam
 
 from .interfaces import SessionRepository
 from .models import ModelContext, PaginatedMessages
@@ -115,4 +115,3 @@ class SessionManager:
         total_messages: int,
     ) -> int:
         return min(max(0, context_start_index), total_messages)
-

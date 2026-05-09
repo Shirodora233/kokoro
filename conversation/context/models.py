@@ -1,4 +1,4 @@
-"""Return models for session management use cases."""
+"""Return models for conversation context use cases."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass
 from math import ceil
 from typing import Any
 
-from conversation.interfaces import ChatMessageParam
 from conversation.models import Message
+from llm.interfaces import ChatMessageParam
 
 
 @dataclass(frozen=True)
@@ -59,4 +59,3 @@ class ModelContext:
 
     def to_record(self) -> dict[str, Any]:
         return asdict(self)
-

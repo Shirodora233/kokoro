@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from session_management import ModelContext, PaginatedMessages, SessionManager
+from llm.config import LLMConfig
+from llm.interfaces import ChatClient, ChatMessageParam
+from llm.openai_client import OpenAIChatClient
 
-from .config import LLMConfig, StorageConfig, default_data_dir
-from .interfaces import ChatClient, ChatMessageParam, ConversationStore
+from .config import StorageConfig, default_data_dir
+from .context import ModelContext, PaginatedMessages, SessionManager
+from .interfaces import ConversationStore
 from .models import ChatSession, Message, User, utc_now
-from .openai_client import OpenAIChatClient
 from .storage import JsonConversationStore
 
 
