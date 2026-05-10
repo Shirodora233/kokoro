@@ -37,7 +37,7 @@ class ConversationService:
         config = LLMConfig.from_env(env_file)
         storage_config = StorageConfig.from_env(env_file)
         if storage_config.backend == "postgres":
-            from database import PostgresConversationStore
+            from .storage.postgres import PostgresConversationStore
 
             store = PostgresConversationStore(storage_config.database_url or "")
         else:

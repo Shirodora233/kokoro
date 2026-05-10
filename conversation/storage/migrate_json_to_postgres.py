@@ -9,7 +9,7 @@ from conversation.config import StorageConfig, default_data_dir
 from conversation.models import ChatSession, Message
 from conversation.storage import JsonConversationStore
 
-from .postgres_store import PostgresConversationStore
+from .postgres import PostgresConversationStore
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -6,12 +6,12 @@ from typing import Iterable
 
 from conversation.models import ChatSession, Message, User
 
-from .postgres.connection import PostgresDatabase
-from .postgres.import_repository import PostgresImportRepository
-from .postgres.maintenance_repository import PostgresMaintenanceRepository
-from .postgres.message_repository import PostgresMessageRepository
-from .postgres.session_repository import PostgresSessionRepository
-from .postgres.user_repository import PostgresUserRepository
+from .connection import PostgresDatabase
+from .import_repository import PostgresImportRepository
+from .maintenance_repository import PostgresMaintenanceRepository
+from .message_repository import PostgresMessageRepository
+from .session_repository import PostgresSessionRepository
+from .user_repository import PostgresUserRepository
 
 
 class PostgresConversationStore:

@@ -1155,7 +1155,7 @@ CREATE TABLE memory_embeddings (
 - `sessions`
 - `messages`
 
-对应的 PostgreSQL schema 目前位于 [database/postgres/schema.sql](../database/postgres/schema.sql)。本设计文档描述的是未来可以在此基础上扩展的“记忆层”模型，而不是立刻替换现有会话存储。
+对应的 PostgreSQL schema 目前位于 [conversation/storage/postgres/schema.sql](../conversation/storage/postgres/schema.sql)。本设计文档描述的是未来可以在此基础上扩展的“记忆层”模型，而不是立刻替换现有会话存储。
 
 如果后续要落地，建议：
 

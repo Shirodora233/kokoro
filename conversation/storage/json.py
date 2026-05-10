@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Callable
 
-from .models import ChatSession, Message, User
+from ..models import ChatSession, Message, User
 
 
 def _table_template(

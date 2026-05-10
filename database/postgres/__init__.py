@@ -1,2 +1,0 @@
-"""PostgreSQL-specific persistence internals."""
-

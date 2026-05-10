@@ -6,7 +6,7 @@
 - `conversation/data/sessions.json`
 - `conversation/data/messages.json`
 - `conversation/data/schema.json`
-- `database/postgres/schema.sql`
+- `conversation/storage/postgres/schema.sql`
 
 ## 配置
 
@@ -46,13 +46,13 @@ docker run -d --name kokoro-postgres \
 从 JSON 表迁移到 PostgreSQL：
 
 ```bash
-.venv/bin/python -m database.migrate_json_to_postgres --replace
+.venv/bin/python -m conversation.storage.migrate_json_to_postgres --replace
 ```
 
 也可以显式传入连接串：
 
 ```bash
-.venv/bin/python -m database.migrate_json_to_postgres \
+.venv/bin/python -m conversation.storage.migrate_json_to_postgres \
   --database-url "postgresql://kokoro:<strong-password>@127.0.0.1:54330/kokoro" \
   --replace
 ```
