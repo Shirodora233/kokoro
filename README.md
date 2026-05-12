@@ -177,6 +177,15 @@ print(reply["assistant_message"]["content"])
 
 LLM provider 抽象位于 `llm/`，包括 `ChatClient`、`ChatMessageParam`、`LLMConfig` 和 `OpenAIChatClient`。后续 `conversation/` 和 `memory/` 都应该依赖 `llm/`，避免记忆系统反向依赖对话系统。
 
+## 记忆运行时
+
+`memory/` 是独立于 `conversation/` 的记忆系统边界。当前默认启用进程内 `InMemoryMemorySystem`：
+
+- 记忆记录暂存在进程内，不持久化。
+- 默认 extractor 暂不抽取新记忆，后续会接入 LLM 抽取。
+- 已具备 active memory context 缓存、简单检索和 prompt context 注入链路。
+- 可通过传入 `NoopMemorySystem` 临时关闭记忆链路。
+
 HTTP 接口也已经暴露：
 
 ```text

@@ -22,6 +22,7 @@ from .models import (
     MemoryTurnResult,
 )
 from .noop import NoopMemorySystem
+from .system import InMemoryMemorySystem
 
 __all__ = [
     "ActiveMemoryContext",
@@ -41,5 +42,6 @@ __all__ = [
     "MemorySystem",
     "MemoryTurnInput",
     "MemoryTurnResult",
+    "InMemoryMemorySystem",
     "NoopMemorySystem",
 ]

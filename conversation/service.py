@@ -17,7 +17,7 @@ from memory import (
     MemorySystem,
     MemoryTurnInput,
     MemoryTurnResult,
-    NoopMemorySystem,
+    InMemoryMemorySystem,
 )
 
 from .config import ConversationRuntimeConfig, StorageConfig, default_data_dir
@@ -42,7 +42,7 @@ class ConversationService:
         self.chat_client = chat_client
         self.config = config
         self.sessions = SessionManager(store)
-        self.memory_system = memory_system or NoopMemorySystem()
+        self.memory_system = memory_system or InMemoryMemorySystem()
         self.timezone = timezone
 
     @classmethod
