@@ -134,6 +134,16 @@ MemoryTurnResult(
 
 第一阶段使用进程内 memory runtime：store、active context cache、retriever 和 conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和 active memory context 中抽取候选记忆，再写入内存 store。后续替换语义检索或数据库存储时，不需要再改 conversation 边界。
 
+Extractor contract 当前要求时间独立抽取：
+
+- `event` 表示 durable topic、episode、plan、appointment、story beat 或更大的语境单元，不表示每个小事实。
+- `description` 表示具体细节、观察或小事实；如果时间重要，时间必须拆成独立 `time_ref` 和 `time_link`，不要只写在 description text 里。
+- `time_ref` 是独立时间对象，覆盖 exact、relative、vague、duration、recurring，以及 fictional timeline 的时间。
+- `time_link` 连接 `time_ref` 和 event/description/property/entity/summary。
+- 每个 event 必须有对应 `time_ref` + `time_link`，否则 extractor validator 会丢弃该 event。
+
+`time_ref.metadata` 必须包含稳定字段：`raw_text`、`time_kind`、`timeline_kind`、`certainty`、`anchor_timezone`、`anchor_utc_offset`。不同 `time_kind` 还需要额外字段：`exact` 需要 `resolved_start` 和 `granularity`；`relative` 需要 `anchor_message_id`、`resolved_start` 和 `granularity`；`vague` 需要 `description`；`duration` 需要 `duration_text`；`recurring` 需要 `recurrence_text`。
+
 ## 6. 上下文压缩
 
 上下文压缩由 memory 决策，由 conversation 执行。
@@ -210,6 +220,7 @@ memory 失败不应该阻断基础对话能力。
 - `memory/extraction/prompt.py`：抽取 prompt 构造。
 - `memory/extraction/parser.py`：抽取 JSON 响应解析。
 - `memory/extraction/normalizer.py`：候选记忆规范化为 `MemoryRecord`。
+- `memory/extraction/validation.py`：候选校验，包括 `time_ref` 字段契约和 event 必须链接时间。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的内存检索与 prompt context 渲染。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。

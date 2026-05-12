@@ -4,6 +4,7 @@ from .config import MemoryRuntimeConfig
 from .extraction import (
     LLMMemoryExtractionClient,
     LLMMemoryExtractor,
+    MemoryCandidateValidator,
     MemoryExtractionPromptBuilder,
 )
 from .interfaces import (
@@ -37,6 +38,7 @@ __all__ = [
     "ConversationContextState",
     "MemoryContextBlock",
     "MemoryContextRenderer",
+    "MemoryCandidateValidator",
     "MemoryExtractionPromptBuilder",
     "MemoryRuntimeConfig",
     "MemoryExtractor",

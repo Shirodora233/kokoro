@@ -80,6 +80,9 @@ def _parse_candidate(raw_memory: Any) -> ExtractedMemoryCandidate | None:
     if not isinstance(raw_text, str) or not raw_text.strip():
         return None
 
+    raw_client_id = raw_memory.get("client_id")
+    client_id = raw_client_id.strip() if isinstance(raw_client_id, str) else None
+
     raw_metadata = raw_memory.get("metadata")
     metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
     metadata.pop("canonical_key", None)
@@ -94,6 +97,7 @@ def _parse_candidate(raw_memory: Any) -> ExtractedMemoryCandidate | None:
     return ExtractedMemoryCandidate(
         memory_type=cast(MemoryRecordType, raw_type),
         text=raw_text.strip(),
+        client_id=client_id,
         metadata=metadata,
         source_message_ids=source_message_ids,
         source_quote=source_quote,

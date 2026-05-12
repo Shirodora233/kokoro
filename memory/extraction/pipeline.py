@@ -12,6 +12,7 @@ from .llm import LLMMemoryExtractionClient
 from .normalizer import MemoryCandidateNormalizer
 from .parser import MemoryExtractionParseError, parse_extraction_response
 from .prompt import MemoryExtractionPromptBuilder
+from .validation import MemoryCandidateValidator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class LLMMemoryExtractor:
         prompt_builder: MemoryExtractionPromptBuilder | None = None,
         llm_client: LLMMemoryExtractionClient | None = None,
         normalizer: MemoryCandidateNormalizer | None = None,
+        validator: MemoryCandidateValidator | None = None,
     ) -> None:
         if llm_client is None and chat_client is None:
             raise ValueError("chat_client or llm_client is required")
@@ -37,6 +39,7 @@ class LLMMemoryExtractor:
             prompt_builder=prompt_builder,
         )
         self.normalizer = normalizer or MemoryCandidateNormalizer()
+        self.validator = validator or MemoryCandidateValidator()
 
     def extract(self, turn: MemoryTurnInput) -> Sequence[MemoryRecord]:
         response_text = self.llm_client.extract_text(turn)
@@ -45,4 +48,7 @@ class LLMMemoryExtractor:
         except MemoryExtractionParseError as error:
             LOGGER.warning("Failed to parse memory extraction response: %s", error)
             return []
-        return self.normalizer.normalize(candidates, turn)
+        validation_result = self.validator.validate(candidates)
+        for error in validation_result.errors:
+            LOGGER.info("Dropped invalid memory candidate: %s", error)
+        return self.normalizer.normalize(validation_result.candidates, turn)
