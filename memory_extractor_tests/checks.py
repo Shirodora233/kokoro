@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
 from memory.models import MemoryRecord
 from memory.extraction.validation import (
@@ -26,12 +27,22 @@ class CheckResult:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    raw_usage: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class CaseResult:
     case: ExtractorTestCase
     records: list[MemoryRecord] = field(default_factory=list)
     checks: list[CheckResult] = field(default_factory=list)
     error: str | None = None
     duration_seconds: float | None = None
+    token_usage: TokenUsage | None = None
 
     @property
     def passed(self) -> bool:
@@ -42,6 +53,7 @@ def evaluate_case(
     case: ExtractorTestCase,
     records: list[MemoryRecord],
     duration_seconds: float,
+    token_usage: TokenUsage | None = None,
 ) -> CaseResult:
     checks = [_evaluate_signal(signal, records) for signal in case.expected_signals]
     checks.extend(_invariant_checks(case, records))
@@ -50,6 +62,7 @@ def evaluate_case(
         records=records,
         checks=checks,
         duration_seconds=duration_seconds,
+        token_usage=token_usage,
     )
 
 
@@ -57,12 +70,14 @@ def failed_case(
     case: ExtractorTestCase,
     error: Exception,
     duration_seconds: float,
+    token_usage: TokenUsage | None = None,
 ) -> CaseResult:
     return CaseResult(
         case=case,
         checks=[],
         error=f"{type(error).__name__}: {error}",
         duration_seconds=duration_seconds,
+        token_usage=token_usage,
     )
 
 

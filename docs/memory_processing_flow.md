@@ -136,13 +136,15 @@ MemoryTurnResult(
 
 Extractor contract 当前要求时间独立抽取：
 
+- extractor 只负责尽可能提取候选事实，不负责检索已有记忆、不去重、不合并、不判定更新或最终写入。
+- `active_memory_context` 在 extractor 阶段只用于理解指代和语义，不用于压制候选输出。
 - `event` 表示 durable topic、episode、plan、appointment、story beat 或更大的语境单元，不表示每个小事实。
 - `description` 表示具体细节、观察或小事实；如果时间重要，时间必须拆成独立 `time_ref` 和 `time_link`，不要只写在 description text 里。
 - `time_ref` 是独立时间对象，覆盖 exact、relative、vague、duration、recurring，以及 fictional timeline 的时间。
 - `time_link` 连接 `time_ref` 和 event/description/property/entity/summary。
 - 每个 event 必须有对应 `time_ref` + `time_link`，否则 extractor validator 会丢弃该 event。
 
-`time_ref.metadata` 必须包含稳定字段：`raw_text`、`time_kind`、`timeline_kind`、`certainty`、`anchor_timezone`、`anchor_utc_offset`。不同 `time_kind` 还需要额外字段：`exact` 需要 `resolved_start` 和 `granularity`；`relative` 需要 `anchor_message_id`、`resolved_start` 和 `granularity`；`vague` 需要 `description`；`duration` 需要 `duration_text`；`recurring` 需要 `recurrence_text`。
+`time_ref.metadata` 必须包含稳定字段：`raw_text`、`time_kind`、`timeline_kind`、`certainty`、`anchor_timezone`、`anchor_utc_offset`。不同 `time_kind` 还需要额外字段：`exact` 需要 `resolved_start` 和 `granularity`；`relative` 需要 `anchor_message_id`、`resolved_start` 和 `granularity`；`vague` 需要 `description`；`duration` 需要 `duration_text`；`recurring` 需要 `recurrence_text`。如果 event 没有显式或可推断的事件时间，但仍值得抽取，应以消息提及时间建立 `time_ref` 并用 `time_role=mentioned_at` 连接。
 
 ## 6. 上下文压缩
 

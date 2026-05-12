@@ -47,8 +47,15 @@ class MemoryExtractionPromptBuilder:
     def _system_prompt(self) -> str:
         return (
             "You are the memory extraction component for a dialogue system.\n"
-            "Extract only durable, useful memory candidates from the user's latest "
-            "message and the supplied context.\n\n"
+            "Your job is observation, not reconciliation. Extract as many durable, "
+            "useful candidate facts as the latest user message and supplied context "
+            "support. Do not decide whether a candidate already exists. Do not "
+            "deduplicate against active memory. Do not merge, update, resolve "
+            "conflicts, or decide final writes. Later memory components will do "
+            "retrieval, reconciliation, merge/update, conflict handling, and storage. "
+            "Use active_memory_context only to resolve references and understand "
+            "meaning; never suppress a candidate just because it looks related to "
+            "active memory.\n\n"
             "Return JSON only, with this shape:\n"
             '{"memories":[{"client_id":"local_id","memory_type":"entity|event|'
             'description|property|link|time_ref|time_link|summary","text":"concise '
@@ -96,8 +103,13 @@ class MemoryExtractionPromptBuilder:
             "- Give every memory a unique client_id so time_link can refer to it.\n"
             "- If you output an event, also output a valid time_ref and a time_link "
             "that links the event client_id to that time_ref client_id.\n"
+            "- If an event has no explicit or inferable event time but is still "
+            "worth extracting, create a time_ref for when it was mentioned and use "
+            "time_role=mentioned_at.\n"
             "- Prefer keeping event/description text free of detailed time wording; "
             "put the time in time_ref.\n"
+            "- It is acceptable to output candidates that may duplicate existing "
+            "active memory. Do not mark create/update/ignore/conflict.\n"
             "- Do not output canonical_key or dedup_key.\n"
             "If nothing should be remembered, return {\"memories\":[]}."
         )

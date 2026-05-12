@@ -31,6 +31,10 @@ class ExtractorTestCase:
     description: str
     turn: MemoryTurnInput
     expected_signals: tuple[ExpectedSignal, ...]
+    scope_note: str = (
+        "Extractor-only test: extract candidate facts, without retrieval, dedupe, "
+        "merge/update, conflict handling, or final write decisions."
+    )
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -262,7 +266,10 @@ def _active_context_update_case() -> ExtractorTestCase:
     return ExtractorTestCase(
         case_id="active_context_update",
         title="已有活跃记忆下的补充信息",
-        description="active context 已有茶饮偏好，应抽取新的补充属性。",
+        description=(
+            "active context 只用于理解“那个茉莉花茶”的指代；extractor 仍应"
+            "尽可能抽取候选事实，不负责判断是否更新已有记忆。"
+        ),
         turn=_turn(session_id, messages, active_memory_context=active_context),
         expected_signals=(
             ExpectedSignal(label="至少抽取一条候选记忆", min_records=1),

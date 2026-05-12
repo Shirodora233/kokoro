@@ -48,9 +48,11 @@ def build_report(
         "",
         "## Scope",
         "",
-        "This report tests only `LLMMemoryExtractor`: prompt construction, real LLM "
-        "call, JSON parsing, and normalization into `MemoryRecord`. It does not "
-        "test memory persistence, retrieval, merge/update, or conflict resolution.",
+        "This report tests only `LLMMemoryExtractor` as a candidate-fact extractor: "
+        "prompt construction, real LLM call, JSON parsing, validation, and "
+        "normalization into `MemoryRecord`. It does not test memory persistence, "
+        "retrieval, dedupe, merge/update, final write decisions, or conflict "
+        "resolution.",
         "",
     ]
     for result in results:
@@ -67,11 +69,14 @@ def _case_section(result: CaseResult) -> list[str]:
         "",
         f"**Description:** {result.case.description}",
         "",
+        f"**Scope:** {result.case.scope_note}",
+        "",
         f"**Duration:** {result.duration_seconds:.2f}s"
         if result.duration_seconds is not None
         else "**Duration:** n/a",
         "",
     ]
+    lines.extend(_token_usage_section(result))
     if result.error:
         lines.extend(["**Error:**", "", f"```text\n{result.error}\n```", ""])
         return lines
@@ -99,6 +104,40 @@ def _case_section(result: CaseResult) -> list[str]:
             ]
         )
     return lines
+
+
+def _token_usage_section(result: CaseResult) -> list[str]:
+    usage = result.token_usage
+    if usage is None:
+        return ["**Token Usage:** n/a", ""]
+    lines = [
+        "### Token Usage",
+        "",
+        f"- Input tokens: `{_format_token(usage.input_tokens)}`",
+        f"- Output tokens: `{_format_token(usage.output_tokens)}`",
+        f"- Total tokens: `{_format_token(usage.total_tokens)}`",
+        f"- Cached input tokens: `{_format_token(usage.cached_tokens)}`",
+        "",
+    ]
+    if usage.raw_usage:
+        lines.extend(
+            [
+                "<details>",
+                "<summary>Raw usage</summary>",
+                "",
+                "```json",
+                json.dumps(usage.raw_usage, ensure_ascii=False, indent=2),
+                "```",
+                "",
+                "</details>",
+                "",
+            ]
+        )
+    return lines
+
+
+def _format_token(value: int | None) -> str:
+    return "n/a" if value is None else str(value)
 
 
 def _source_messages_section(result: CaseResult) -> list[str]:
