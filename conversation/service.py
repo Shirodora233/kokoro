@@ -12,8 +12,11 @@ from llm.openai_client import OpenAIChatClient
 from memory import (
     ContextAction,
     ConversationContextState,
+    LLMMemoryExtractor,
     MemoryContextBlock,
+    MemoryExtractionPromptBuilder,
     MemoryInputMessage,
+    MemoryRuntimeConfig,
     MemorySystem,
     MemoryTurnInput,
     MemoryTurnResult,
@@ -54,16 +57,33 @@ class ConversationService:
         config = LLMConfig.from_env(env_file)
         storage_config = StorageConfig.from_env(env_file)
         runtime_config = ConversationRuntimeConfig.from_env(env_file)
+        memory_config = MemoryRuntimeConfig.from_env(env_file)
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
 
             store = PostgresConversationStore(storage_config.database_url or "")
         else:
             store = JsonConversationStore(data_dir or default_data_dir())
+        chat_client = OpenAIChatClient(config)
+        memory_system = InMemoryMemorySystem()
+        if memory_config.extraction_enabled:
+            memory_system = InMemoryMemorySystem(
+                extractor=LLMMemoryExtractor(
+                    chat_client=chat_client,
+                    model=memory_config.extraction_model or config.model,
+                    temperature=memory_config.extraction_temperature,
+                    prompt_builder=MemoryExtractionPromptBuilder(
+                        max_context_messages=(
+                            memory_config.extraction_max_context_messages
+                        ),
+                    ),
+                )
+            )
         return cls(
             store=store,
-            chat_client=OpenAIChatClient(config),
+            chat_client=chat_client,
             config=config,
+            memory_system=memory_system,
             timezone=runtime_config.timezone,
         )
 

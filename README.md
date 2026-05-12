@@ -19,6 +19,10 @@ LLM_MODEL="..."
 CONVERSATION_STORE="postgres"
 CONVERSATION_DATABASE_URL="postgresql://kokoro:...@127.0.0.1:54330/kokoro"
 CONVERSATION_TIMEZONE="Asia/Shanghai"
+MEMORY_EXTRACTION_ENABLED="true"
+MEMORY_EXTRACTION_MODEL=""
+MEMORY_EXTRACTION_TEMPERATURE="0.0"
+MEMORY_EXTRACTION_MAX_CONTEXT_MESSAGES="20"
 ```
 
 也支持 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL` 作为兼容字段。
@@ -182,9 +186,17 @@ LLM provider 抽象位于 `llm/`，包括 `ChatClient`、`ChatMessageParam`、`L
 `memory/` 是独立于 `conversation/` 的记忆系统边界。当前默认启用进程内 `InMemoryMemorySystem`：
 
 - 记忆记录暂存在进程内，不持久化。
-- 默认 extractor 暂不抽取新记忆，后续会接入 LLM 抽取。
+- 默认通过 `LLMMemoryExtractor` 从新消息和近期上下文中抽取候选记忆。
 - 已具备 active memory context 缓存、简单检索和 prompt context 注入链路。
 - 可通过传入 `NoopMemorySystem` 临时关闭记忆链路。
+
+抽取实现拆在 `memory/extraction/`：`pipeline.py` 负责流程编排，`llm.py` 只负责调用模型，`prompt.py`、`parser.py`、`normalizer.py` 分别负责提示词、JSON 解析和候选规范化。
+
+如果需要临时关闭 LLM 记忆抽取，可以设置：
+
+```env
+MEMORY_EXTRACTION_ENABLED="false"
+```
 
 HTTP 接口也已经暴露：
 

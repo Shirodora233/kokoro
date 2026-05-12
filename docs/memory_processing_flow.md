@@ -132,7 +132,7 @@ MemoryTurnResult(
 - `created_memories`：本次新建的记忆记录。
 - `updated_memories`：本次更新、合并或失效的记忆记录。
 
-第一阶段可以只做进程内 memory runtime：抽取器暂时返回空候选，但 store、active context cache、retriever 和 conversation 接线都是真实的。这样后续替换 LLM 抽取、语义检索或数据库存储时，不需要再改 conversation 边界。
+第一阶段使用进程内 memory runtime：store、active context cache、retriever 和 conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和 active memory context 中抽取候选记忆，再写入内存 store。后续替换语义检索或数据库存储时，不需要再改 conversation 边界。
 
 ## 6. 上下文压缩
 
@@ -201,17 +201,23 @@ memory 失败不应该阻断基础对话能力。
 - `memory/models.py`：中立数据契约。
 - `memory/interfaces.py`：memory 系统、抽取、存储、检索、上下文策略接口。
 - `memory/system.py`：`InMemoryMemorySystem`，组合抽取、存储、活跃缓存、检索和上下文策略。
+- `memory/config.py`：memory runtime 配置，例如是否启用 LLM 抽取、抽取模型、抽取温度和上下文条数。
 - `memory/storage/in_memory.py`：进程内记忆记录 store，不持久化。
 - `memory/context/cache.py`：进程内 `ActiveMemoryContext` 缓存。
 - `memory/context/policy.py`：暂不生成压缩动作的 policy。
-- `memory/extraction/noop.py`：暂不抽取候选记忆的 extractor。
+- `memory/extraction/pipeline.py`：最小 LLM 抽取流程，负责调用模型、解析响应并规范化为 `MemoryRecord`。
+- `memory/extraction/llm.py`：LLM 调用适配层，只返回模型原始响应文本。
+- `memory/extraction/prompt.py`：抽取 prompt 构造。
+- `memory/extraction/parser.py`：抽取 JSON 响应解析。
+- `memory/extraction/normalizer.py`：候选记忆规范化为 `MemoryRecord`。
+- `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的内存检索与 prompt context 渲染。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。
 - `memory/__init__.py`：公共导出。
 
 后续实现可以继续拆分：
 
-- `memory/extraction/llm.py`：基于共享 `llm/` 的候选记忆抽取。
+- `memory/extraction/pipeline.py`：基于共享 `llm/` 的候选记忆抽取流程。
 - `memory/retrieval/vector.py` 或 `memory/retrieval/postgres.py`：语义检索或数据库检索。
 - `memory/storage/postgres/`：数据库持久化。
 - `memory/context/policy.py`：真实上下文压缩策略。

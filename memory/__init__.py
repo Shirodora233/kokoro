@@ -1,5 +1,11 @@
 """Memory system contracts."""
 
+from .config import MemoryRuntimeConfig
+from .extraction import (
+    LLMMemoryExtractionClient,
+    LLMMemoryExtractor,
+    MemoryExtractionPromptBuilder,
+)
 from .interfaces import (
     ContextPolicy,
     MemoryContextRenderer,
@@ -31,6 +37,8 @@ __all__ = [
     "ConversationContextState",
     "MemoryContextBlock",
     "MemoryContextRenderer",
+    "MemoryExtractionPromptBuilder",
+    "MemoryRuntimeConfig",
     "MemoryExtractor",
     "MemoryInputMessage",
     "MemoryRecord",
@@ -43,5 +51,7 @@ __all__ = [
     "MemoryTurnInput",
     "MemoryTurnResult",
     "InMemoryMemorySystem",
+    "LLMMemoryExtractionClient",
+    "LLMMemoryExtractor",
     "NoopMemorySystem",
 ]
