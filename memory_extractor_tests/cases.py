@@ -18,6 +18,7 @@ from memory.models import (
 class ExpectedSignal:
     label: str
     required_types: tuple[str, ...] = ()
+    required_all_types: tuple[str, ...] = ()
     any_text_contains: tuple[str, ...] = ()
     min_records: int | None = None
     max_records: int | None = None
@@ -174,8 +175,11 @@ def _fictional_deer_case() -> ExtractorTestCase:
                 any_text_contains=("鹿", "deer", "铁路", "rail", "车站", "station"),
             ),
             ExpectedSignal(
-                label="包含 time_ref 或文本提到模糊时间",
-                required_types=("time_ref", "description", "event"),
+                label="包含独立 time_ref 和 time_link",
+                required_all_types=("time_ref", "time_link"),
+            ),
+            ExpectedSignal(
+                label="文本提到模糊时间",
                 any_text_contains=("很久", "一两年", "long ago", "year"),
             ),
         ),
@@ -208,8 +212,8 @@ def _relative_time_case() -> ExtractorTestCase:
         expected_signals=(
             ExpectedSignal(label="至少抽取一条候选记忆", min_records=1),
             ExpectedSignal(
-                label="包含 event 或 time_ref",
-                required_types=("event", "time_ref"),
+                label="包含 event、time_ref 和 time_link",
+                required_all_types=("event", "time_ref", "time_link"),
             ),
             ExpectedSignal(
                 label="文本提到复诊、林医生或明天上午十点",

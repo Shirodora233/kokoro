@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from memory.models import MemoryRecord
+from memory.extraction.validation import (
+    ALLOWED_CERTAINTY,
+    ALLOWED_TIME_KINDS,
+    ALLOWED_TIME_ROLES,
+    ALLOWED_TIMELINE_KINDS,
+    TIME_KIND_REQUIRED_FIELDS,
+    TIME_REF_BASE_FIELDS,
+)
 
 from .cases import ExpectedSignal, ExtractorTestCase
 
@@ -68,6 +77,14 @@ def _evaluate_signal(
         failures.append(f"expected at most {signal.max_records}, got {len(records)}")
     if signal.required_types and not _has_any_type(records, signal.required_types):
         failures.append(f"missing any type in {signal.required_types}")
+    if signal.required_all_types:
+        missing_types = [
+            memory_type
+            for memory_type in signal.required_all_types
+            if not _has_any_type(records, (memory_type,))
+        ]
+        if missing_types:
+            failures.append(f"missing required types {missing_types}")
     if signal.any_text_contains and not _contains_any(records, signal.any_text_contains):
         failures.append(f"missing text signal in {signal.any_text_contains}")
 
@@ -84,6 +101,9 @@ def _invariant_checks(
         _no_forbidden_metadata_keys(records),
         _all_records_have_source_refs(records),
         _source_quotes_match_messages(case, records),
+        _time_refs_have_required_metadata(records),
+        _time_links_reference_existing_candidates(records),
+        _events_have_time_links(records),
         _all_records_have_text(records),
     ]
 
@@ -93,8 +113,22 @@ def _has_any_type(records: list[MemoryRecord], types: tuple[str, ...]) -> bool:
 
 
 def _contains_any(records: list[MemoryRecord], needles: tuple[str, ...]) -> bool:
-    text = "\n".join(record.text for record in records).casefold()
+    text = "\n".join(_searchable_text(record) for record in records).casefold()
     return any(needle.casefold() in text for needle in needles)
+
+
+def _searchable_text(record: MemoryRecord) -> str:
+    source_quotes = [
+        source_ref.quote or ""
+        for source_ref in record.source_refs
+    ]
+    return "\n".join(
+        [
+            record.text,
+            *source_quotes,
+            json.dumps(record.metadata, ensure_ascii=False),
+        ]
+    )
 
 
 def _no_forbidden_metadata_keys(records: list[MemoryRecord]) -> CheckResult:
@@ -162,3 +196,97 @@ def _all_records_have_text(records: list[MemoryRecord]) -> CheckResult:
             f"{empty_count} records have empty text",
         )
     return CheckResult("所有候选都有非空 text", True, "ok")
+
+
+def _time_refs_have_required_metadata(records: list[MemoryRecord]) -> CheckResult:
+    failures: list[str] = []
+    for record in records:
+        if record.memory_type != "time_ref":
+            continue
+        metadata = record.metadata
+        missing_base = _missing_fields(metadata, TIME_REF_BASE_FIELDS)
+        if missing_base:
+            failures.append(f"time_ref missing base fields {missing_base}")
+            continue
+        time_kind = str(metadata.get("time_kind"))
+        timeline_kind = str(metadata.get("timeline_kind"))
+        certainty = str(metadata.get("certainty"))
+        if time_kind not in ALLOWED_TIME_KINDS:
+            failures.append(f"time_ref has invalid time_kind {time_kind!r}")
+        if timeline_kind not in ALLOWED_TIMELINE_KINDS:
+            failures.append(f"time_ref has invalid timeline_kind {timeline_kind!r}")
+        if certainty not in ALLOWED_CERTAINTY:
+            failures.append(f"time_ref has invalid certainty {certainty!r}")
+        if time_kind in TIME_KIND_REQUIRED_FIELDS:
+            missing_kind = _missing_fields(
+                metadata,
+                TIME_KIND_REQUIRED_FIELDS[time_kind],
+            )
+            if missing_kind:
+                failures.append(
+                    f"time_ref kind={time_kind} missing fields {missing_kind}"
+                )
+
+    if failures:
+        return CheckResult("time_ref metadata 符合稳定契约", False, "; ".join(failures))
+    return CheckResult("time_ref metadata 符合稳定契约", True, "ok")
+
+
+def _time_links_reference_existing_candidates(
+    records: list[MemoryRecord],
+) -> CheckResult:
+    candidate_ids = {
+        record.metadata.get("candidate_client_id")
+        for record in records
+        if isinstance(record.metadata.get("candidate_client_id"), str)
+    }
+    failures: list[str] = []
+    for record in records:
+        if record.memory_type != "time_link":
+            continue
+        metadata = record.metadata
+        target_id = metadata.get("target_client_id")
+        time_ref_id = metadata.get("time_ref_client_id")
+        time_role = metadata.get("time_role")
+        if target_id not in candidate_ids:
+            failures.append(f"time_link target {target_id!r} missing")
+        if time_ref_id not in candidate_ids:
+            failures.append(f"time_link time_ref {time_ref_id!r} missing")
+        if time_role not in ALLOWED_TIME_ROLES:
+            failures.append(f"time_link time_role {time_role!r} invalid")
+
+    if failures:
+        return CheckResult("time_link 引用存在且角色合法", False, "; ".join(failures))
+    return CheckResult("time_link 引用存在且角色合法", True, "ok")
+
+
+def _events_have_time_links(records: list[MemoryRecord]) -> CheckResult:
+    linked_target_ids = {
+        record.metadata.get("target_client_id")
+        for record in records
+        if record.memory_type == "time_link"
+    }
+    failures: list[str] = []
+    for record in records:
+        if record.memory_type != "event":
+            continue
+        client_id = record.metadata.get("candidate_client_id")
+        if not client_id:
+            failures.append(f"event {record.text!r} missing candidate_client_id")
+        elif client_id not in linked_target_ids:
+            failures.append(f"event {client_id!r} has no time_link")
+
+    if failures:
+        return CheckResult("event 都有独立 time_ref/time_link", False, "; ".join(failures))
+    return CheckResult("event 都有独立 time_ref/time_link", True, "ok")
+
+
+def _missing_fields(
+    metadata: dict[str, object],
+    fields: set[str],
+) -> list[str]:
+    return [
+        field
+        for field in fields
+        if not isinstance(metadata.get(field), str) or not str(metadata[field]).strip()
+    ]

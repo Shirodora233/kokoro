@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from llm.config import LLMConfig
@@ -22,8 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", default=".env", help="Path to .env file")
     parser.add_argument(
         "--report-path",
-        default="memory_extractor_tests/reports/latest.md",
-        help="Markdown report path",
+        default=None,
+        help="Markdown report path. Defaults to a timestamped report.",
     )
     parser.add_argument(
         "--strict",
@@ -59,7 +60,7 @@ def main() -> int:
             duration = time.perf_counter() - start
             results.append(failed_case(case, error, duration))
 
-    report_path = Path(args.report_path)
+    report_path = Path(args.report_path) if args.report_path else _default_report_path()
     write_report(
         report_path,
         results=results,
@@ -73,6 +74,11 @@ def main() -> int:
     if args.strict and passed_count != len(results):
         return 1
     return 0
+
+
+def _default_report_path() -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return Path("memory_extractor_tests") / "reports" / f"{timestamp}.md"
 
 
 if __name__ == "__main__":
