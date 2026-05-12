@@ -200,6 +200,7 @@ memory 失败不应该阻断基础对话能力。
 
 - `memory/models.py`：中立数据契约。
 - `memory/interfaces.py`：memory 系统、抽取、存储、检索、上下文策略接口。
+- `memory/noop.py`：无操作实现，用于先把 conversation 和 memory 的调用链接起来。
 - `memory/__init__.py`：公共导出。
 
 后续实现可以继续拆分：

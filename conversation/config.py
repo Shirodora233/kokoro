@@ -36,6 +36,21 @@ def load_env_file(path: str | Path = ".env") -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class ConversationRuntimeConfig:
+    timezone: str = "UTC"
+
+    @classmethod
+    def from_env(cls, env_file: str | Path = ".env") -> "ConversationRuntimeConfig":
+        file_values = load_env_file(env_file)
+
+        def read(name: str, default: str | None = None) -> str | None:
+            return os.getenv(name) or file_values.get(name) or default
+
+        timezone = read("CONVERSATION_TIMEZONE") or read("TZ") or "UTC"
+        return cls(timezone=timezone)
+
+
+@dataclass(frozen=True)
 class StorageConfig:
     backend: Literal["json", "postgres"]
     database_url: str | None = None

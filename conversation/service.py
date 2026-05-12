@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from llm.config import LLMConfig
 from llm.interfaces import ChatClient, ChatMessageParam
 from llm.openai_client import OpenAIChatClient
+from memory import (
+    ContextAction,
+    ConversationContextState,
+    MemoryContextBlock,
+    MemoryInputMessage,
+    MemorySystem,
+    MemoryTurnInput,
+    MemoryTurnResult,
+    NoopMemorySystem,
+)
 
-from .config import StorageConfig, default_data_dir
+from .config import ConversationRuntimeConfig, StorageConfig, default_data_dir
 from .context import ModelContext, PaginatedMessages, SessionManager
 from .interfaces import ConversationStore
 from .models import ChatSession, Message, User, utc_now
 from .storage import JsonConversationStore
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ConversationService:
@@ -22,11 +35,15 @@ class ConversationService:
         store: ConversationStore,
         chat_client: ChatClient,
         config: LLMConfig,
+        memory_system: MemorySystem | None = None,
+        timezone: str = "UTC",
     ) -> None:
         self.store = store
         self.chat_client = chat_client
         self.config = config
         self.sessions = SessionManager(store)
+        self.memory_system = memory_system or NoopMemorySystem()
+        self.timezone = timezone
 
     @classmethod
     def default(
@@ -36,13 +53,19 @@ class ConversationService:
     ) -> "ConversationService":
         config = LLMConfig.from_env(env_file)
         storage_config = StorageConfig.from_env(env_file)
+        runtime_config = ConversationRuntimeConfig.from_env(env_file)
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
 
             store = PostgresConversationStore(storage_config.database_url or "")
         else:
             store = JsonConversationStore(data_dir or default_data_dir())
-        return cls(store=store, chat_client=OpenAIChatClient(config), config=config)
+        return cls(
+            store=store,
+            chat_client=OpenAIChatClient(config),
+            config=config,
+            timezone=runtime_config.timezone,
+        )
 
     def create_user(
         self,
@@ -135,7 +158,13 @@ class ConversationService:
             )
         )
 
-        llm_messages = self._build_llm_context(session)
+        memory_result = self._process_memory_turn(session, user_message)
+        self._apply_memory_context_actions(memory_result.context_actions)
+
+        llm_messages = self._build_llm_context(
+            session,
+            memory_context=memory_result.memory_context,
+        )
         completion = self.chat_client.complete(
             llm_messages,
             model=session.model,
@@ -202,8 +231,94 @@ class ConversationService:
             page_size=page_size,
         )
 
-    def _build_llm_context(self, session: ChatSession) -> list[ChatMessageParam]:
-        return self.sessions.get_model_context(session.id).messages
+    def _process_memory_turn(
+        self,
+        session: ChatSession,
+        user_message: Message,
+    ) -> MemoryTurnResult:
+        turn = self._build_memory_turn_input(session, user_message)
+        try:
+            return self.memory_system.process_turn(turn)
+        except Exception as error:
+            LOGGER.warning("Memory turn processing failed: %s", error)
+            return MemoryTurnResult()
+
+    def _build_memory_turn_input(
+        self,
+        session: ChatSession,
+        user_message: Message,
+    ) -> MemoryTurnInput:
+        messages = self.store.list_messages(session.id)
+        context_start_index = self._clamp_context_start_index(
+            session.context_start_index,
+            total_messages=len(messages),
+        )
+        active_messages = messages[context_start_index:]
+        return MemoryTurnInput(
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=self._to_memory_input_message(user_message),
+            timezone=self.timezone,
+            conversation_context=[
+                self._to_memory_input_message(message) for message in active_messages
+            ],
+            context_state=ConversationContextState(
+                context_start_index=context_start_index,
+                total_messages=len(messages),
+                max_context_messages=session.max_context_messages,
+                active_message_ids=[message.id for message in active_messages],
+            ),
+        )
+
+    def _to_memory_input_message(self, message: Message) -> MemoryInputMessage:
+        return MemoryInputMessage(
+            id=message.id,
+            role=message.role,
+            content=message.content,
+            session_id=message.session_id,
+            user_id=message.user_id,
+            created_at=message.created_at,
+            metadata=message.metadata,
+        )
+
+    def _apply_memory_context_actions(self, actions: list[ContextAction]) -> None:
+        # No memory context actions are executable until summary storage is introduced.
+        if actions:
+            LOGGER.info(
+                "Memory context actions are not applied yet: %s",
+                [action.action_type for action in actions],
+            )
+        return None
+
+    def _build_llm_context(
+        self,
+        session: ChatSession,
+        memory_context: list[MemoryContextBlock] | None = None,
+    ) -> list[ChatMessageParam]:
+        messages = self.sessions.get_model_context(session.id).messages
+        memory_message = self._render_memory_context(memory_context or [])
+        if not memory_message:
+            return messages
+        insert_at = 1 if messages and messages[0]["role"] == "system" else 0
+        return [*messages[:insert_at], memory_message, *messages[insert_at:]]
+
+    def _render_memory_context(
+        self,
+        memory_context: list[MemoryContextBlock],
+    ) -> ChatMessageParam | None:
+        blocks = [block for block in memory_context if block.content.strip()]
+        if not blocks:
+            return None
+        ordered_blocks = sorted(blocks, key=lambda block: block.priority, reverse=True)
+        content = "\n\n".join(block.content.strip() for block in ordered_blocks)
+        return {"role": "system", "content": f"Memory context:\n{content}"}
+
+    def _clamp_context_start_index(
+        self,
+        context_start_index: int,
+        total_messages: int,
+    ) -> int:
+        return min(max(0, context_start_index), total_messages)
 
     def _require_session(
         self,

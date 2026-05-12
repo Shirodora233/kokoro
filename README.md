@@ -18,6 +18,7 @@ LLM_BASE_URL="..."
 LLM_MODEL="..."
 CONVERSATION_STORE="postgres"
 CONVERSATION_DATABASE_URL="postgresql://kokoro:...@127.0.0.1:54330/kokoro"
+CONVERSATION_TIMEZONE="Asia/Shanghai"
 ```
 
 也支持 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL` 作为兼容字段。
