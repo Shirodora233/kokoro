@@ -22,6 +22,8 @@ class RelatedMemory:
     reasons: list[str] = field(default_factory=list)
     matched_candidate_id: str | None = None
     matched_candidate_type: str | None = None
+    match_kind: str = "direct"
+    expansion_depth: int = 0
 
     def to_record(self) -> dict[str, object]:
         return asdict(self)
@@ -45,6 +47,8 @@ class _MutableRelated:
     reasons: set[str]
     matched_candidate_id: str | None
     matched_candidate_type: str | None
+    match_kind: str
+    expansion_depth: int
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,8 @@ class CandidateMemoryRetriever:
                     reasons=sorted(item.reasons),
                     matched_candidate_id=item.matched_candidate_id,
                     matched_candidate_type=item.matched_candidate_type,
+                    match_kind=item.match_kind,
+                    expansion_depth=item.expansion_depth,
                 )
                 for item in selected
             ],
@@ -128,6 +134,8 @@ class CandidateMemoryRetriever:
                 "stored_record_count": len(stored_records),
                 "related_count": len(related),
                 "returned_count": len(selected),
+                "direct_count": self._match_kind_count(related, "direct"),
+                "expanded_count": self._match_kind_count(related, "expanded"),
                 "expanded_one_hop": self.expand_one_hop,
             },
         )
@@ -284,37 +292,35 @@ class CandidateMemoryRetriever:
         related: dict[str, _MutableRelated],
         index: _RecordIndex,
     ) -> None:
-        changed = True
-        while changed:
-            changed = False
-            related_snapshot = list(related.values())
-            for item in related_snapshot:
-                for link in index.links:
-                    endpoints = list(self._link_endpoints(link))
-                    touched = [
-                        endpoint for endpoint in endpoints
-                        if self._record_has_object_key(item.record, endpoint)
-                    ]
-                    if not touched or not _sources_overlap(item.record, link):
+        direct_matches = [
+            item for item in related.values()
+            if item.match_kind == "direct"
+        ]
+        for item in direct_matches:
+            for link in index.links:
+                endpoints = list(self._link_endpoints(link))
+                touched = [
+                    endpoint for endpoint in endpoints
+                    if self._record_has_object_key(item.record, endpoint)
+                ]
+                if not touched or not _sources_overlap(item.record, link):
+                    continue
+                self._add_expanded_record(
+                    related,
+                    link,
+                    item,
+                    reason=self._link_reason(link),
+                )
+                for endpoint in endpoints:
+                    if endpoint in touched:
                         continue
-                    if self._add_expanded_record(
-                        related,
-                        link,
-                        item,
-                        reason=self._link_reason(link),
-                    ):
-                        changed = True
-                    for endpoint in endpoints:
-                        if endpoint in touched:
-                            continue
-                        for neighbor in self._resolve_endpoint(endpoint, link, index):
-                            if self._add_expanded_record(
-                                related,
-                                neighbor,
-                                item,
-                                reason=f"one_hop_neighbor:{self._link_reason(link)}",
-                            ):
-                                changed = True
+                    for neighbor in self._resolve_endpoint(endpoint, link, index):
+                        self._add_expanded_record(
+                            related,
+                            neighbor,
+                            item,
+                            reason=f"one_hop_neighbor:{self._link_reason(link)}",
+                        )
 
     def _add_expanded_record(
         self,
@@ -322,8 +328,7 @@ class CandidateMemoryRetriever:
         record: MemoryRecord,
         origin: _MutableRelated,
         reason: str,
-    ) -> bool:
-        before = set(related)
+    ) -> None:
         self._add_related(
             related=related,
             record=record,
@@ -331,8 +336,9 @@ class CandidateMemoryRetriever:
             reasons=[reason],
             matched_candidate_id=origin.matched_candidate_id,
             matched_candidate_type=origin.matched_candidate_type,
+            match_kind="expanded",
+            expansion_depth=1,
         )
-        return set(related) != before
 
     def _add_related(
         self,
@@ -343,6 +349,8 @@ class CandidateMemoryRetriever:
         matched_candidate: MemoryRecord | None = None,
         matched_candidate_id: str | None = None,
         matched_candidate_type: str | None = None,
+        match_kind: str = "direct",
+        expansion_depth: int = 0,
     ) -> None:
         key = _stable_record_key(record)
         candidate_id = matched_candidate_id
@@ -359,15 +367,29 @@ class CandidateMemoryRetriever:
                 reasons=set(reasons),
                 matched_candidate_id=candidate_id,
                 matched_candidate_type=candidate_type,
+                match_kind=match_kind,
+                expansion_depth=expansion_depth,
             )
             return
 
         existing.score = max(existing.score, score)
         existing.reasons.update(reasons)
+        if existing.match_kind != "direct" and match_kind == "direct":
+            existing.match_kind = "direct"
+            existing.expansion_depth = 0
+        elif existing.match_kind == match_kind:
+            existing.expansion_depth = min(existing.expansion_depth, expansion_depth)
         if existing.matched_candidate_id is None:
             existing.matched_candidate_id = candidate_id
         if existing.matched_candidate_type is None:
             existing.matched_candidate_type = candidate_type
+
+    def _match_kind_count(
+        self,
+        related: dict[str, _MutableRelated],
+        match_kind: str,
+    ) -> int:
+        return sum(1 for item in related.values() if item.match_kind == match_kind)
 
     def _build_index(self, records: Sequence[MemoryRecord]) -> _RecordIndex:
         by_object_key: dict[tuple[str, str], list[MemoryRecord]] = {}

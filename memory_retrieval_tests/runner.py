@@ -19,6 +19,7 @@ def main() -> int:
         test_entity_exact_match,
         test_entity_match_expands_properties,
         test_event_match_expands_description_and_time,
+        test_one_hop_expansion_does_not_chain,
         test_scope_filtering,
         test_unrelated_candidate_returns_empty,
     ]
@@ -58,7 +59,7 @@ def test_entity_match_expands_properties() -> None:
             _record(
                 "prop_sugar",
                 "property",
-                "用户偏好茉莉花茶少糖",
+                "用户偏好少糖",
                 client_id="prop_sugar",
                 metadata={
                     "entity_client_id": "ent_tea",
@@ -83,6 +84,8 @@ def test_entity_match_expands_properties() -> None:
     related = _ids(result)
     assert {"ent_tea", "prop_sugar", "link_tea_sugar"} <= related, related
     assert _has_reason(result, "prop_sugar", "one_hop_neighbor")
+    assert _match_kind(result, "ent_tea") == "direct"
+    assert _match_kind(result, "prop_sugar") == "expanded"
 
 
 def test_event_match_expands_description_and_time() -> None:
@@ -149,6 +152,52 @@ def test_event_match_expands_description_and_time() -> None:
     related = _ids(result)
     expected = {"evt_swim", "desc_swim", "link_swim_desc", "time_swim", "tlink_swim"}
     assert expected <= related, related
+
+
+def test_one_hop_expansion_does_not_chain() -> None:
+    store = InMemoryMemoryStore(
+        [
+            _record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea"),
+            _record(
+                "prop_sugar",
+                "property",
+                "用户偏好少糖",
+                client_id="prop_sugar",
+                metadata={"entity_client_id": "ent_tea"},
+            ),
+            _link(
+                "link_tea_sugar",
+                from_type="entity",
+                from_client_id="ent_tea",
+                to_type="property",
+                to_client_id="prop_sugar",
+                relation_type="has_property",
+            ),
+            _record(
+                "time_sugar",
+                "time_ref",
+                "昨天",
+                client_id="time_sugar",
+                metadata={"raw_text": "昨天"},
+            ),
+            _time_link(
+                "tlink_sugar_time",
+                target_type="property",
+                target_client_id="prop_sugar",
+                time_ref_client_id="time_sugar",
+                time_role="mentioned_at",
+            ),
+        ]
+    )
+    result = CandidateMemoryRetriever(store).retrieve_related(
+        [_candidate("entity", "茉莉花茶", client_id="cand_tea")],
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+    )
+    related = _ids(result)
+    assert {"ent_tea", "prop_sugar", "link_tea_sugar"} <= related, related
+    assert "time_sugar" not in related, related
+    assert "tlink_sugar_time" not in related, related
 
 
 def test_scope_filtering() -> None:
@@ -290,6 +339,13 @@ def _has_reason(
             continue
         return any(reason.startswith(expected) for reason in related.reasons)
     return False
+
+
+def _match_kind(result: CandidateRetrievalResult, record_id: str) -> str | None:
+    for related in result.records:
+        if related.record.id == record_id:
+            return related.match_kind
+    return None
 
 
 if __name__ == "__main__":

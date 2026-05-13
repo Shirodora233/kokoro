@@ -6,5 +6,6 @@ Run local deterministic tests for candidate-aware retrieval:
 .venv/bin/python -m memory_retrieval_tests.runner
 ```
 
-These tests do not call an LLM. They cover candidate matching, one-hop link
-expansion, scope filtering, and unrelated candidates.
+These tests do not call an LLM. They cover candidate matching, direct/expanded
+result labels, strict one-hop link expansion, scope filtering, and unrelated
+candidates.
