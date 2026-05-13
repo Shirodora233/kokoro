@@ -16,4 +16,4 @@ memory_extractor_tests/reports/YYYYMMDDTHHMMSSZ.md
 
 如需指定固定路径，可以传入 `--report-path`。
 
-这些测试只覆盖当前 extractor：prompt 构造、LLM 调用、JSON 解析、候选规范化。它们不会测试 memory store、merge/update、冲突解决或检索。
+这些测试只覆盖当前 extractor：prompt 构造、LLM 调用、聚合 JSON 解析、候选校验，以及拆分为当前 `MemoryRecord` 的过程。报告会记录每个 case 的原始 LLM 输入和输出。它们不会测试 memory store、merge/update、冲突解决或检索。

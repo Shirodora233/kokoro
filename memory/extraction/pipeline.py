@@ -51,4 +51,4 @@ class LLMMemoryExtractor:
         validation_result = self.validator.validate(candidates)
         for error in validation_result.errors:
             LOGGER.info("Dropped invalid memory candidate: %s", error)
-        return self.normalizer.normalize(validation_result.candidates, turn)
+        return self.normalizer.normalize(validation_result.batch, turn)

@@ -20,6 +20,7 @@ class ExpectedSignal:
     required_types: tuple[str, ...] = ()
     required_all_types: tuple[str, ...] = ()
     any_text_contains: tuple[str, ...] = ()
+    all_text_contains: tuple[str, ...] = ()
     min_records: int | None = None
     max_records: int | None = None
 
@@ -44,6 +45,9 @@ def build_cases() -> list[ExtractorTestCase]:
         _fictional_deer_case(),
         _relative_time_case(),
         _active_context_update_case(),
+        _weekly_swimming_plan_case(),
+        _food_constraints_case(),
+        _fictional_radio_case(),
         _do_not_remember_case(),
     ]
 
@@ -280,6 +284,117 @@ def _active_context_update_case() -> ExtractorTestCase:
             ExpectedSignal(
                 label="文本提到少糖或不加奶",
                 any_text_contains=("少糖", "不加奶", "milk", "sugar"),
+            ),
+        ),
+    )
+
+
+def _weekly_swimming_plan_case() -> ExtractorTestCase:
+    session_id = "ses_extractor_swimming"
+    messages = [
+        _message(
+            "msg_swim_1",
+            "user",
+            "我想把运动安排固定下来。",
+            session_id,
+            created_at="2026-05-12T15:00:00+08:00",
+        ),
+        _message(
+            "msg_swim_2",
+            "user",
+            "从下周开始，每周三晚上我去虹口游泳馆练自由泳，教练叫周敏。",
+            session_id,
+            created_at="2026-05-12T15:02:00+08:00",
+        ),
+    ]
+    return ExtractorTestCase(
+        case_id="weekly_swimming_plan",
+        title="周期性运动计划",
+        description="最新消息包含周期性计划、地点、活动和人物，不能依赖 prompt 示例。",
+        turn=_turn(session_id, messages),
+        expected_signals=(
+            ExpectedSignal(label="至少抽取一条候选记忆", min_records=1),
+            ExpectedSignal(
+                label="包含 event、time_ref 和 time_link",
+                required_all_types=("event", "time_ref", "time_link"),
+            ),
+            ExpectedSignal(
+                label="文本提到自由泳、虹口游泳馆或周敏",
+                all_text_contains=("自由泳", "虹口", "周敏"),
+            ),
+        ),
+    )
+
+
+def _food_constraints_case() -> ExtractorTestCase:
+    session_id = "ses_extractor_food_constraints"
+    messages = [
+        _message(
+            "msg_food_1",
+            "user",
+            "以后你帮我选餐厅的时候，要避开香菜。",
+            session_id,
+            created_at="2026-05-12T16:00:00+08:00",
+        ),
+        _message(
+            "msg_food_2",
+            "user",
+            "另外我对花生有点过敏，推荐菜时也要注意。",
+            session_id,
+            created_at="2026-05-12T16:01:00+08:00",
+        ),
+    ]
+    return ExtractorTestCase(
+        case_id="food_constraints",
+        title="饮食禁忌和过敏信息",
+        description="最新上下文包含稳定饮食偏好和过敏状态，应该作为属性候选抽取。",
+        turn=_turn(session_id, messages),
+        expected_signals=(
+            ExpectedSignal(label="至少抽取一条候选记忆", min_records=1),
+            ExpectedSignal(
+                label="包含 property",
+                required_all_types=("property",),
+            ),
+            ExpectedSignal(
+                label="文本同时提到香菜和花生过敏",
+                all_text_contains=("香菜", "花生", "过敏"),
+            ),
+        ),
+    )
+
+
+def _fictional_radio_case() -> ExtractorTestCase:
+    session_id = "ses_extractor_radio"
+    messages = [
+        _message(
+            "msg_radio_1",
+            "user",
+            "新故事里有一个反复出现的物件。",
+            session_id,
+            created_at="2026-05-12T17:00:00+08:00",
+        ),
+        _message(
+            "msg_radio_2",
+            "user",
+            "那台蓝色收音机在战争结束前夜突然播报不存在的海港天气。",
+            session_id,
+            created_at="2026-05-12T17:02:00+08:00",
+        ),
+    ]
+    return ExtractorTestCase(
+        case_id="fictional_radio",
+        title="非示例虚构事件和时间",
+        description="故事事件不使用鹿或铁路示例，应该抽取事件、细节、实体和虚构时间。",
+        turn=_turn(session_id, messages),
+        expected_signals=(
+            ExpectedSignal(label="至少抽取两条候选记忆", min_records=2),
+            ExpectedSignal(
+                label="包含 event、description、time_ref 和 time_link",
+                required_all_types=("event", "description", "time_ref", "time_link"),
+            ),
+            ExpectedSignal(
+                label="文本同时提到收音机、战争和海港天气",
+                all_text_contains=("收音机", "战争", "海港"),
             ),
         ),
     )

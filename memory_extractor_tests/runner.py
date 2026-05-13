@@ -23,6 +23,8 @@ class RecordingChatClient:
     def __init__(self, inner: ChatClient) -> None:
         self.inner = inner
         self.last_usage: TokenUsage | None = None
+        self.last_input: list[dict[str, str]] = []
+        self.last_output: str | None = None
 
     def complete(
         self,
@@ -30,12 +32,15 @@ class RecordingChatClient:
         model: str | None = None,
         temperature: float | None = None,
     ) -> ChatCompletionResult:
+        self.last_input = [dict(message) for message in messages]
+        self.last_output = None
         completion = self.inner.complete(
             messages=messages,
             model=model,
             temperature=temperature,
         )
         self.last_usage = _token_usage_from_raw(completion.usage)
+        self.last_output = completion.content
         return completion
 
 
@@ -73,6 +78,8 @@ def main() -> int:
     results: list[CaseResult] = []
     for case in build_cases():
         chat_client.last_usage = None
+        chat_client.last_input = []
+        chat_client.last_output = None
         start = time.perf_counter()
         try:
             records = list(extractor.extract(case.turn))
@@ -83,6 +90,8 @@ def main() -> int:
                     records,
                     duration,
                     token_usage=chat_client.last_usage,
+                    llm_input=chat_client.last_input,
+                    llm_output=chat_client.last_output,
                 )
             )
         except Exception as error:
@@ -93,6 +102,8 @@ def main() -> int:
                     error,
                     duration,
                     token_usage=chat_client.last_usage,
+                    llm_input=chat_client.last_input,
+                    llm_output=chat_client.last_output,
                 )
             )
 

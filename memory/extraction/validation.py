@@ -1,11 +1,17 @@
-"""Validation for extracted memory candidates."""
+"""Validation for aggregate extracted memory candidates."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from .schema import ExtractedMemoryCandidate
+from .schema import (
+    EntityCandidate,
+    EventCandidate,
+    ExtractionCandidateBatch,
+    PropertyCandidate,
+    TimeCandidate,
+)
 
 TIME_REF_BASE_FIELDS = {
     "raw_text",
@@ -33,120 +39,88 @@ ALLOWED_TIME_ROLES = {
     "valid_from",
     "valid_until",
     "mentioned_at",
+    "observed_at",
+    "recurs_at",
     "duration",
 }
 
 
 @dataclass(frozen=True)
 class CandidateValidationResult:
-    candidates: list[ExtractedMemoryCandidate]
+    batch: ExtractionCandidateBatch
     errors: list[str] = field(default_factory=list)
 
 
 class MemoryCandidateValidator:
-    """Validate candidate-level contracts that prompt instructions cannot ensure."""
+    """Validate aggregate candidate shape without doing reconciliation."""
 
     def validate(
         self,
-        candidates: list[ExtractedMemoryCandidate],
+        batch: ExtractionCandidateBatch,
     ) -> CandidateValidationResult:
-        valid_by_client_id = self._valid_non_link_candidates(candidates)
-        valid_links, link_errors = self._valid_time_links(candidates, valid_by_client_id)
-        valid_event_ids = self._event_ids_with_time_links(valid_links)
-
-        errors = list(link_errors)
-        output: list[ExtractedMemoryCandidate] = []
-        for candidate in candidates:
-            if candidate.memory_type == "time_link":
-                if candidate in valid_links:
-                    output.append(candidate)
-                continue
-
-            if candidate.memory_type == "event":
-                if not candidate.client_id:
-                    errors.append("event dropped because client_id is missing")
-                    continue
-                if candidate.client_id not in valid_event_ids:
-                    errors.append(
-                        f"event {candidate.client_id} dropped because it has no valid time_link"
-                    )
-                    continue
-
-            if candidate.client_id and candidate.client_id in valid_by_client_id:
-                output.append(candidate)
-                continue
-            if not candidate.client_id and candidate.memory_type != "time_ref":
-                output.append(candidate)
-
-        return CandidateValidationResult(candidates=output, errors=errors)
-
-    def _valid_non_link_candidates(
-        self,
-        candidates: list[ExtractedMemoryCandidate],
-    ) -> dict[str, ExtractedMemoryCandidate]:
-        valid: dict[str, ExtractedMemoryCandidate] = {}
-        for candidate in candidates:
-            if candidate.memory_type == "time_link":
-                continue
-            if candidate.memory_type == "time_ref" and not self._is_valid_time_ref(
-                candidate
-            ):
-                continue
-            if candidate.client_id:
-                valid[candidate.client_id] = candidate
-        return valid
-
-    def _valid_time_links(
-        self,
-        candidates: list[ExtractedMemoryCandidate],
-        valid_by_client_id: dict[str, ExtractedMemoryCandidate],
-    ) -> tuple[list[ExtractedMemoryCandidate], list[str]]:
-        valid_links: list[ExtractedMemoryCandidate] = []
         errors: list[str] = []
-        for candidate in candidates:
-            if candidate.memory_type != "time_link":
+        events: list[EventCandidate] = []
+        entities: list[EntityCandidate] = []
+
+        for event in batch.event_candidates:
+            if not event.descriptions:
+                errors.append(f"event {event.client_id or event.title!r} has no descriptions")
                 continue
-            metadata = candidate.metadata
-            target_id = self._string_value(metadata, "target_client_id")
-            time_ref_id = self._string_value(metadata, "time_ref_client_id")
-            time_role = self._string_value(metadata, "time_role")
-            if not target_id or not time_ref_id or not time_role:
-                errors.append("time_link dropped because required metadata is missing")
-                continue
-            if time_role not in ALLOWED_TIME_ROLES:
-                errors.append(f"time_link dropped because time_role={time_role!r}")
-                continue
-            if target_id not in valid_by_client_id:
-                errors.append(f"time_link dropped because target {target_id!r} is invalid")
-                continue
-            target = valid_by_client_id[target_id]
-            if target.memory_type == "time_ref":
-                errors.append("time_link dropped because target cannot be time_ref")
-                continue
-            if time_ref_id not in valid_by_client_id:
-                errors.append(
-                    f"time_link dropped because time_ref {time_ref_id!r} is invalid"
+            events.append(event)
+            errors.extend(self._time_errors(event.time, f"event {event.client_id}"))
+            for description in event.descriptions:
+                errors.extend(
+                    self._time_errors(
+                        description.time,
+                        f"description {description.client_id}",
+                        allow_same_as_parent=True,
+                    )
                 )
-                continue
-            time_ref = valid_by_client_id[time_ref_id]
-            if time_ref.memory_type != "time_ref":
-                errors.append("time_link dropped because time_ref target is not time_ref")
-                continue
-            valid_links.append(candidate)
-        return valid_links, errors
+            for entity in event.entities:
+                errors.extend(self._entity_errors(entity))
 
-    def _event_ids_with_time_links(
+        for entity in batch.entity_candidates:
+            errors.extend(self._entity_errors(entity))
+            entities.append(entity)
+
+        return CandidateValidationResult(
+            batch=ExtractionCandidateBatch(
+                event_candidates=events,
+                entity_candidates=entities,
+                metadata=batch.metadata,
+            ),
+            errors=errors,
+        )
+
+    def _entity_errors(self, entity: EntityCandidate) -> list[str]:
+        errors: list[str] = []
+        if not entity.name.strip():
+            errors.append("entity has empty name")
+        for prop in entity.properties:
+            errors.extend(self._property_errors(prop))
+        return errors
+
+    def _property_errors(self, prop: PropertyCandidate) -> list[str]:
+        return self._time_errors(prop.time, f"property {prop.client_id}")
+
+    def _time_errors(
         self,
-        links: list[ExtractedMemoryCandidate],
-    ) -> set[str]:
-        return {
-            link.metadata["target_client_id"]
-            for link in links
-            if isinstance(link.metadata.get("target_client_id"), str)
-        }
+        time: TimeCandidate | None,
+        label: str,
+        allow_same_as_parent: bool = False,
+    ) -> list[str]:
+        if time is None:
+            return []
+        if allow_same_as_parent and time.role == "same_as_parent":
+            return []
+        if not self._is_valid_time_ref(time):
+            return [f"{label} has invalid time contract"]
+        if time.role and time.role not in ALLOWED_TIME_ROLES:
+            return [f"{label} has invalid time role {time.role!r}"]
+        return []
 
-    def _is_valid_time_ref(self, candidate: ExtractedMemoryCandidate) -> bool:
-        metadata = candidate.metadata
+    def _is_valid_time_ref(self, time: TimeCandidate) -> bool:
+        metadata = self._time_metadata(time)
         if not self._has_required_fields(metadata, TIME_REF_BASE_FIELDS):
             return False
 
@@ -162,6 +136,28 @@ class MemoryCandidateValidator:
 
         required = TIME_KIND_REQUIRED_FIELDS[time_kind]
         return self._has_required_fields(metadata, required)
+
+    def _time_metadata(self, time: TimeCandidate) -> dict[str, Any]:
+        metadata = dict(time.metadata)
+        for field_name in [
+            "raw_text",
+            "time_kind",
+            "timeline_kind",
+            "certainty",
+            "anchor_timezone",
+            "anchor_utc_offset",
+            "anchor_message_id",
+            "resolved_start",
+            "resolved_end",
+            "granularity",
+            "description",
+            "duration_text",
+            "recurrence_text",
+        ]:
+            value = getattr(time, field_name)
+            if value is not None:
+                metadata.setdefault(field_name, value)
+        return metadata
 
     def _has_required_fields(
         self,

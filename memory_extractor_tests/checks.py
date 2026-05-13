@@ -43,6 +43,8 @@ class CaseResult:
     error: str | None = None
     duration_seconds: float | None = None
     token_usage: TokenUsage | None = None
+    llm_input: list[dict[str, str]] = field(default_factory=list)
+    llm_output: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -54,6 +56,8 @@ def evaluate_case(
     records: list[MemoryRecord],
     duration_seconds: float,
     token_usage: TokenUsage | None = None,
+    llm_input: list[dict[str, str]] | None = None,
+    llm_output: str | None = None,
 ) -> CaseResult:
     checks = [_evaluate_signal(signal, records) for signal in case.expected_signals]
     checks.extend(_invariant_checks(case, records))
@@ -63,6 +67,8 @@ def evaluate_case(
         checks=checks,
         duration_seconds=duration_seconds,
         token_usage=token_usage,
+        llm_input=llm_input or [],
+        llm_output=llm_output,
     )
 
 
@@ -71,6 +77,8 @@ def failed_case(
     error: Exception,
     duration_seconds: float,
     token_usage: TokenUsage | None = None,
+    llm_input: list[dict[str, str]] | None = None,
+    llm_output: str | None = None,
 ) -> CaseResult:
     return CaseResult(
         case=case,
@@ -78,6 +86,8 @@ def failed_case(
         error=f"{type(error).__name__}: {error}",
         duration_seconds=duration_seconds,
         token_usage=token_usage,
+        llm_input=llm_input or [],
+        llm_output=llm_output,
     )
 
 
@@ -102,6 +112,10 @@ def _evaluate_signal(
             failures.append(f"missing required types {missing_types}")
     if signal.any_text_contains and not _contains_any(records, signal.any_text_contains):
         failures.append(f"missing text signal in {signal.any_text_contains}")
+    if signal.all_text_contains:
+        missing_text = _missing_text_signals(records, signal.all_text_contains)
+        if missing_text:
+            failures.append(f"missing text signals {missing_text}")
 
     if failures:
         return CheckResult(signal.label, False, "; ".join(failures))
@@ -130,6 +144,14 @@ def _has_any_type(records: list[MemoryRecord], types: tuple[str, ...]) -> bool:
 def _contains_any(records: list[MemoryRecord], needles: tuple[str, ...]) -> bool:
     text = "\n".join(_searchable_text(record) for record in records).casefold()
     return any(needle.casefold() in text for needle in needles)
+
+
+def _missing_text_signals(
+    records: list[MemoryRecord],
+    needles: tuple[str, ...],
+) -> list[str]:
+    text = "\n".join(_searchable_text(record) for record in records).casefold()
+    return [needle for needle in needles if needle.casefold() not in text]
 
 
 def _searchable_text(record: MemoryRecord) -> str:

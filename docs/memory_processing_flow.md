@@ -134,15 +134,16 @@ MemoryTurnResult(
 
 第一阶段使用进程内 memory runtime：store、active context cache、retriever 和 conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和 active memory context 中抽取候选记忆，再写入内存 store。后续替换语义检索或数据库存储时，不需要再改 conversation 边界。
 
-Extractor contract 当前要求时间独立抽取：
+Extractor contract 当前采用聚合候选输出：
 
 - extractor 只负责尽可能提取候选事实，不负责检索已有记忆、不去重、不合并、不判定更新或最终写入。
 - `active_memory_context` 在 extractor 阶段只用于理解指代和语义，不用于压制候选输出。
-- `event` 表示 durable topic、episode、plan、appointment、story beat 或更大的语境单元，不表示每个小事实。
-- `description` 表示具体细节、观察或小事实；如果时间重要，时间必须拆成独立 `time_ref` 和 `time_link`，不要只写在 description text 里。
-- `time_ref` 是独立时间对象，覆盖 exact、relative、vague、duration、recurring，以及 fictional timeline 的时间。
-- `time_link` 连接 `time_ref` 和 event/description/property/entity/summary。
-- 每个 event 必须有对应 `time_ref` + `time_link`，否则 extractor validator 会丢弃该 event。
+- LLM 输出 `event_candidates[]` 和 `entity_candidates[]`，而不是直接输出底层 `event`、`description`、`link`、`time_link`。
+- `event_candidate` 表示 durable topic、episode、plan、appointment、story beat 或更大的语境单元，必须至少包含一个 `description`。
+- `description` 表示事件里的具体细节、观察或小事实，不能孤立存在。
+- `entity_candidate` 表示人物、地点、物品、概念、故事实体等，`property` 必须嵌套在所属 entity 下。
+- 用户也可以作为普通 entity 候选输出，后续 reconciliation 再和系统用户实体合并。
+- `time` 嵌套在 event、description 或 property 上；normalizer 再拆成底层 `time_ref` 和 `time_link`。
 
 `time_ref.metadata` 必须包含稳定字段：`raw_text`、`time_kind`、`timeline_kind`、`certainty`、`anchor_timezone`、`anchor_utc_offset`。不同 `time_kind` 还需要额外字段：`exact` 需要 `resolved_start` 和 `granularity`；`relative` 需要 `anchor_message_id`、`resolved_start` 和 `granularity`；`vague` 需要 `description`；`duration` 需要 `duration_text`；`recurring` 需要 `recurrence_text`。如果 event 没有显式或可推断的事件时间，但仍值得抽取，应以消息提及时间建立 `time_ref` 并用 `time_role=mentioned_at` 连接。
 
@@ -182,8 +183,8 @@ conversation 收到动作后可以选择：
 3. conversation 调用 `memory.process_turn(...)`。
 4. memory 加载或刷新 `ActiveMemoryContext`。
 5. memory 把新消息、conversation context、active memory context 一起交给 extractor。
-6. memory 抽取候选记忆，并结合 active memory context 判断是否重复、补充或新话题。
-7. memory 检索更多相关记忆，完成更新、合并或冲突判断。
+6. memory 抽取聚合候选事实，并拆分成当前 runtime 可处理的 `MemoryRecord`。
+7. memory 后续会检索更多相关记忆，完成更新、合并或冲突判断。
 8. memory 返回 `memory_context` 和 `context_actions`。
 9. conversation 执行允许的 `context_actions`。
 10. 如果刚执行了摘要压缩，conversation 将新摘要放在原始 conversation context 开头。
@@ -217,12 +218,13 @@ memory 失败不应该阻断基础对话能力。
 - `memory/storage/in_memory.py`：进程内记忆记录 store，不持久化。
 - `memory/context/cache.py`：进程内 `ActiveMemoryContext` 缓存。
 - `memory/context/policy.py`：暂不生成压缩动作的 policy。
-- `memory/extraction/pipeline.py`：最小 LLM 抽取流程，负责调用模型、解析响应并规范化为 `MemoryRecord`。
+- `memory/extraction/pipeline.py`：最小 LLM 抽取流程，负责调用模型、解析聚合响应并规范化为 `MemoryRecord`。
 - `memory/extraction/llm.py`：LLM 调用适配层，只返回模型原始响应文本。
 - `memory/extraction/prompt.py`：抽取 prompt 构造。
-- `memory/extraction/parser.py`：抽取 JSON 响应解析。
-- `memory/extraction/normalizer.py`：候选记忆规范化为 `MemoryRecord`。
-- `memory/extraction/validation.py`：候选校验，包括 `time_ref` 字段契约和 event 必须链接时间。
+- `memory/extraction/parser.py`：聚合候选 JSON 响应解析。
+- `memory/extraction/normalizer.py`：把聚合候选拆分为 `MemoryRecord`。
+- `memory/extraction/validation.py`：聚合候选校验，包括 event 必须有 description、时间字段契约等。
+- `memory/persistence/models.py`：未来数据库持久化 DTO，暂不接入 store。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的内存检索与 prompt context 渲染。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。

@@ -77,6 +77,7 @@ def _case_section(result: CaseResult) -> list[str]:
         "",
     ]
     lines.extend(_token_usage_section(result))
+    lines.extend(_raw_llm_exchange_section(result))
     if result.error:
         lines.extend(["**Error:**", "", f"```text\n{result.error}\n```", ""])
         return lines
@@ -133,6 +134,31 @@ def _token_usage_section(result: CaseResult) -> list[str]:
                 "",
             ]
         )
+    return lines
+
+
+def _raw_llm_exchange_section(result: CaseResult) -> list[str]:
+    lines = [
+        "### Raw LLM Exchange",
+        "",
+        "<details>",
+        "<summary>Raw input messages</summary>",
+        "",
+        "```json",
+        json.dumps(result.llm_input, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "</details>",
+        "",
+        "<details>",
+        "<summary>Raw output</summary>",
+        "",
+    ]
+    if result.llm_output is None:
+        lines.extend(["```text", "<no output>", "```", ""])
+    else:
+        lines.extend(["```json", result.llm_output, "```", ""])
+    lines.extend(["</details>", ""])
     return lines
 
 
