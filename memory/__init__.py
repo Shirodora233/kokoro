@@ -47,10 +47,17 @@ from .persistence import (
     TimeKind,
     TimelineKind,
 )
+from .retrieval import (
+    CandidateMemoryRetriever,
+    CandidateRetrievalResult,
+    RelatedMemory,
+)
 from .system import InMemoryMemorySystem
 
 __all__ = [
     "ActiveMemoryContext",
+    "CandidateMemoryRetriever",
+    "CandidateRetrievalResult",
     "Confidence",
     "ContextAction",
     "ContextPolicy",
@@ -87,6 +94,7 @@ __all__ = [
     "PersistentSourceRef",
     "PersistentTimeLink",
     "PersistentTimeRef",
+    "RelatedMemory",
     "TimeCertainty",
     "TimeKind",
     "TimelineKind",

@@ -227,6 +227,7 @@ memory 失败不应该阻断基础对话能力。
 - `memory/persistence/models.py`：未来数据库持久化 DTO，暂不接入 store。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的内存检索与 prompt context 渲染。
+- `memory/retrieval/candidate.py`：面向 reconciliation 的候选检索，输入抽取候选，返回相关旧记忆、分数和命中原因。第一版使用确定性规则，不调用 LLM 或向量库。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。
 - `memory/__init__.py`：公共导出。
 
