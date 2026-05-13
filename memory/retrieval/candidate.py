@@ -34,7 +34,22 @@ class CandidateRetrievalResult:
     """Candidate-aware retrieval result used before reconciliation."""
 
     records: list[RelatedMemory] = field(default_factory=list)
+    groups: list["CandidateRelatedGroup"] = field(default_factory=list)
     metadata: dict[str, object] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CandidateRelatedGroup:
+    """Related memories grouped around one extracted candidate."""
+
+    candidate_id: str | None
+    candidate_type: str
+    candidate_text: str
+    direct_matches: list[RelatedMemory] = field(default_factory=list)
+    expanded_context: list[RelatedMemory] = field(default_factory=list)
 
     def to_record(self) -> dict[str, object]:
         return asdict(self)
@@ -115,19 +130,13 @@ class CandidateMemoryRetriever:
             related.values(),
             key=lambda item: (-item.score, item.record.memory_type, item.record.text),
         )[:selected_limit]
+        related_records = [
+            self._freeze_related(item)
+            for item in selected
+        ]
         return CandidateRetrievalResult(
-            records=[
-                RelatedMemory(
-                    record=item.record,
-                    score=round(item.score, 4),
-                    reasons=sorted(item.reasons),
-                    matched_candidate_id=item.matched_candidate_id,
-                    matched_candidate_type=item.matched_candidate_type,
-                    match_kind=item.match_kind,
-                    expansion_depth=item.expansion_depth,
-                )
-                for item in selected
-            ],
+            records=related_records,
+            groups=self._build_groups(candidates, related_records),
             metadata={
                 "retriever": "candidate_in_memory",
                 "candidate_count": len(candidates),
@@ -139,6 +148,47 @@ class CandidateMemoryRetriever:
                 "expanded_one_hop": self.expand_one_hop,
             },
         )
+
+    def _freeze_related(self, item: _MutableRelated) -> RelatedMemory:
+        return RelatedMemory(
+            record=item.record,
+            score=round(item.score, 4),
+            reasons=sorted(item.reasons),
+            matched_candidate_id=item.matched_candidate_id,
+            matched_candidate_type=item.matched_candidate_type,
+            match_kind=item.match_kind,
+            expansion_depth=item.expansion_depth,
+        )
+
+    def _build_groups(
+        self,
+        candidates: Sequence[MemoryRecord],
+        related_records: Sequence[RelatedMemory],
+    ) -> list[CandidateRelatedGroup]:
+        groups: list[CandidateRelatedGroup] = []
+        for candidate in candidates:
+            candidate_id = _client_id(candidate) or candidate.id
+            candidate_related = [
+                related
+                for related in related_records
+                if related.matched_candidate_id == candidate_id
+            ]
+            groups.append(
+                CandidateRelatedGroup(
+                    candidate_id=candidate_id,
+                    candidate_type=candidate.memory_type,
+                    candidate_text=candidate.text,
+                    direct_matches=[
+                        related for related in candidate_related
+                        if related.match_kind == "direct"
+                    ],
+                    expanded_context=[
+                        related for related in candidate_related
+                        if related.match_kind == "expanded"
+                    ],
+                )
+            )
+        return groups
 
     def _score_pair(
         self,

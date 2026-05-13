@@ -7,7 +7,12 @@ from collections.abc import Callable
 from typing import Any
 
 from memory.models import MemoryRecord, MemoryRecordType, MemorySourceRef
-from memory.retrieval import CandidateMemoryRetriever, CandidateRetrievalResult
+from memory.retrieval import (
+    CandidateMemoryRetriever,
+    CandidateRelatedGroup,
+    CandidateRetrievalResult,
+    RelatedMemory,
+)
 from memory.storage import InMemoryMemoryStore
 
 USER_ID = "usr_retrieval_test"
@@ -20,6 +25,9 @@ def main() -> int:
         test_entity_match_expands_properties,
         test_event_match_expands_description_and_time,
         test_one_hop_expansion_does_not_chain,
+        test_groups_keep_direct_and_expanded_separate,
+        test_groups_include_unmatched_candidates,
+        test_groups_separate_multiple_candidates,
         test_scope_filtering,
         test_unrelated_candidate_returns_empty,
     ]
@@ -200,6 +208,80 @@ def test_one_hop_expansion_does_not_chain() -> None:
     assert "tlink_sugar_time" not in related, related
 
 
+def test_groups_keep_direct_and_expanded_separate() -> None:
+    store = InMemoryMemoryStore(
+        [
+            _record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea"),
+            _record(
+                "prop_sugar",
+                "property",
+                "用户偏好少糖",
+                client_id="prop_sugar",
+                metadata={"entity_client_id": "ent_tea"},
+            ),
+            _link(
+                "link_tea_sugar",
+                from_type="entity",
+                from_client_id="ent_tea",
+                to_type="property",
+                to_client_id="prop_sugar",
+                relation_type="has_property",
+            ),
+        ]
+    )
+    result = CandidateMemoryRetriever(store).retrieve_related(
+        [_candidate("entity", "茉莉花茶", client_id="cand_tea")],
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+    )
+    group = _group(result, "cand_tea")
+    assert group is not None
+    assert _related_ids(group.direct_matches) == {"ent_tea"}
+    assert {"prop_sugar", "link_tea_sugar"} <= _related_ids(group.expanded_context)
+
+
+def test_groups_include_unmatched_candidates() -> None:
+    store = InMemoryMemoryStore(
+        [_record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea")]
+    )
+    result = CandidateMemoryRetriever(store).retrieve_related(
+        [
+            _candidate("entity", "茉莉花茶", client_id="cand_tea"),
+            _candidate("entity", "蓝色收音机", client_id="cand_radio"),
+        ],
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+    )
+    assert len(result.groups) == 2
+    unmatched = _group(result, "cand_radio")
+    assert unmatched is not None
+    assert unmatched.direct_matches == []
+    assert unmatched.expanded_context == []
+
+
+def test_groups_separate_multiple_candidates() -> None:
+    store = InMemoryMemoryStore(
+        [
+            _record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea"),
+            _record("ent_radio", "entity", "蓝色收音机", client_id="ent_radio"),
+        ]
+    )
+    result = CandidateMemoryRetriever(store).retrieve_related(
+        [
+            _candidate("entity", "茉莉花茶", client_id="cand_tea"),
+            _candidate("entity", "蓝色收音机", client_id="cand_radio"),
+        ],
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+    )
+    tea_group = _group(result, "cand_tea")
+    radio_group = _group(result, "cand_radio")
+    assert tea_group is not None
+    assert radio_group is not None
+    assert _related_ids(tea_group.direct_matches) == {"ent_tea"}
+    assert _related_ids(radio_group.direct_matches) == {"ent_radio"}
+
+
 def test_scope_filtering() -> None:
     store = InMemoryMemoryStore(
         [
@@ -329,6 +411,13 @@ def _ids(result: CandidateRetrievalResult) -> set[str]:
     }
 
 
+def _related_ids(related_records: list[RelatedMemory]) -> set[str]:
+    return {
+        related.record.id or ""
+        for related in related_records
+    }
+
+
 def _has_reason(
     result: CandidateRetrievalResult,
     record_id: str,
@@ -345,6 +434,16 @@ def _match_kind(result: CandidateRetrievalResult, record_id: str) -> str | None:
     for related in result.records:
         if related.record.id == record_id:
             return related.match_kind
+    return None
+
+
+def _group(
+    result: CandidateRetrievalResult,
+    candidate_id: str,
+) -> CandidateRelatedGroup | None:
+    for group in result.groups:
+        if group.candidate_id == candidate_id:
+            return group
     return None
 
 

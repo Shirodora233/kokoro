@@ -49,6 +49,7 @@ from .persistence import (
 )
 from .retrieval import (
     CandidateMemoryRetriever,
+    CandidateRelatedGroup,
     CandidateRetrievalResult,
     RelatedMemory,
 )
@@ -57,6 +58,7 @@ from .system import InMemoryMemorySystem
 __all__ = [
     "ActiveMemoryContext",
     "CandidateMemoryRetriever",
+    "CandidateRelatedGroup",
     "CandidateRetrievalResult",
     "Confidence",
     "ContextAction",
