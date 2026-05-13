@@ -53,6 +53,16 @@ from .retrieval import (
     CandidateRetrievalResult,
     RelatedMemory,
 )
+from .reconciliation import (
+    DeterministicMemoryReconciler,
+    MemoryReconciler,
+    MemoryReconciliationRequest,
+    MemoryWriteOperation,
+    MemoryWritePlan,
+    ReconciliationConfidence,
+    ReconciliationEvidence,
+    WriteAction,
+)
 from .system import InMemoryMemorySystem
 
 __all__ = [
@@ -64,6 +74,7 @@ __all__ = [
     "ContextAction",
     "ContextPolicy",
     "ConversationContextState",
+    "DeterministicMemoryReconciler",
     "Importance",
     "MemoryContextBlock",
     "MemoryContextRenderer",
@@ -73,6 +84,8 @@ __all__ = [
     "MemoryExtractor",
     "MemoryInputMessage",
     "MemoryRecord",
+    "MemoryReconciler",
+    "MemoryReconciliationRequest",
     "MemoryRetrievalRequest",
     "MemoryRetrievalResult",
     "MemoryRetriever",
@@ -81,6 +94,8 @@ __all__ = [
     "MemorySystem",
     "MemoryTurnInput",
     "MemoryTurnResult",
+    "MemoryWriteOperation",
+    "MemoryWritePlan",
     "ObjectType",
     "InMemoryMemorySystem",
     "LLMMemoryExtractionClient",
@@ -96,8 +111,11 @@ __all__ = [
     "PersistentSourceRef",
     "PersistentTimeLink",
     "PersistentTimeRef",
+    "ReconciliationConfidence",
+    "ReconciliationEvidence",
     "RelatedMemory",
     "TimeCertainty",
     "TimeKind",
     "TimelineKind",
+    "WriteAction",
 ]

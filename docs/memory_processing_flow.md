@@ -228,6 +228,9 @@ memory 失败不应该阻断基础对话能力。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的内存检索与 prompt context 渲染。
 - `memory/retrieval/candidate.py`：面向 reconciliation 的候选检索，输入抽取候选，返回相关旧记忆、分数、命中原因和 direct/expanded 标记。结果同时提供全局 `records` 和按候选分组的 `groups`。第一版使用确定性规则，并严格只做一跳 link/time_link 扩展，不调用 LLM 或向量库。
+- `memory/reconciliation/models.py`：reconciliation 请求、证据、操作和 write plan DTO。write plan 只描述 create/reuse/attach/ignore/flag_conflict，不直接修改 store。
+- `memory/reconciliation/interfaces.py`：`MemoryReconciler` 协议，后续 LLM reconciler 和确定性 reconciler 使用同一接口。
+- `memory/reconciliation/deterministic.py`：确定性 baseline reconciler，基于 candidate retriever 的 grouped result 生成最小 write plan。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。
 - `memory/__init__.py`：公共导出。
 
