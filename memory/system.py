@@ -16,8 +16,18 @@ from .models import (
     MemoryTurnInput,
     MemoryTurnResult,
 )
-from .retrieval import InMemoryMemoryRetriever
+from .reconciliation import (
+    DeterministicMemoryReconciler,
+    MemoryReconciler,
+    MemoryReconciliationRequest,
+)
+from .retrieval import CandidateMemoryRetriever, InMemoryMemoryRetriever
 from .storage import InMemoryMemoryStore
+from .writing import (
+    InMemoryMemoryWritePlanApplier,
+    MemoryWritePlanApplier,
+    MemoryWriteRequest,
+)
 
 
 class InMemoryMemorySystem(MemorySystem):
@@ -28,6 +38,9 @@ class InMemoryMemorySystem(MemorySystem):
         store: InMemoryMemoryStore | None = None,
         extractor: MemoryExtractor | None = None,
         retriever: MemoryRetriever | None = None,
+        candidate_retriever: CandidateMemoryRetriever | None = None,
+        reconciler: MemoryReconciler | None = None,
+        write_applier: MemoryWritePlanApplier | None = None,
         active_cache: InMemoryActiveMemoryCache | None = None,
         context_policy: ContextPolicy | None = None,
     ) -> None:
@@ -36,6 +49,13 @@ class InMemoryMemorySystem(MemorySystem):
         self.active_cache = active_cache or InMemoryActiveMemoryCache()
         self.context_policy = context_policy or NoopContextPolicy()
         self.retriever = retriever or InMemoryMemoryRetriever(self.store)
+        self.candidate_retriever = (
+            candidate_retriever or CandidateMemoryRetriever(self.store)
+        )
+        self.reconciler = reconciler or DeterministicMemoryReconciler()
+        self.write_applier = (
+            write_applier or InMemoryMemoryWritePlanApplier(self.store)
+        )
 
     def process_turn(self, turn: MemoryTurnInput) -> MemoryTurnResult:
         active_context = turn.active_memory_context or self.active_cache.get(
@@ -49,13 +69,42 @@ class InMemoryMemorySystem(MemorySystem):
             self._with_turn_scope(record=record, turn=enriched_turn)
             for record in candidate_records
         ]
-        created_records = list(self.store.save_records(scoped_records))
+        candidate_retrieval = self.candidate_retriever.retrieve_related(
+            scoped_records,
+            user_id=turn.user_id,
+            session_id=turn.session_id,
+        )
+        write_plan = self.reconciler.reconcile(
+            MemoryReconciliationRequest(
+                candidates=scoped_records,
+                retrieval=candidate_retrieval,
+                user_id=turn.user_id,
+                session_id=turn.session_id,
+                metadata={"source": "process_turn"},
+            )
+        )
+        write_result = self.write_applier.apply(
+            MemoryWriteRequest(
+                plan=write_plan,
+                user_id=turn.user_id,
+                session_id=turn.session_id,
+                metadata={"source": "process_turn"},
+            )
+        )
+        created_records = [
+            *write_result.created_records,
+            *write_result.attached_records,
+        ]
+        active_records = [
+            *created_records,
+            *write_result.reused_records,
+        ]
         refreshed_context = self.active_cache.refresh(
             user_id=turn.user_id,
             session_id=turn.session_id,
             new_message_id=turn.new_message.id,
             active_context=active_context,
-            memories=created_records,
+            memories=active_records,
         )
         retrieval_result = self.retrieve_context(
             MemoryRetrievalRequest(
@@ -79,6 +128,9 @@ class InMemoryMemorySystem(MemorySystem):
                 "memory_runtime": "in_memory",
                 "active_memory_context": refreshed_context.to_record(),
                 "retrieval": retrieval_result.metadata,
+                "candidate_retrieval": candidate_retrieval.to_record(),
+                "write_plan": write_plan.to_record(),
+                "write_result": write_result.to_record(),
             },
         )
 

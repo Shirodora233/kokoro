@@ -132,7 +132,10 @@ MemoryTurnResult(
 - `created_memories`：本次新建的记忆记录。
 - `updated_memories`：本次更新、合并或失效的记忆记录。
 
-第一阶段使用进程内 memory runtime：store、active context cache、retriever 和 conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和 active memory context 中抽取候选记忆，再写入内存 store。后续替换语义检索或数据库存储时，不需要再改 conversation 边界。
+第一阶段使用进程内 memory runtime：store、active context cache、retriever、reconciler、writer 和
+conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和
+active memory context 中抽取候选记忆；memory runtime 再检索相关旧记忆、生成 write plan，并把
+write plan 应用到内存 store。后续替换语义检索或数据库存储时，不需要再改 conversation 边界。
 
 Extractor contract 当前采用聚合候选输出：
 
@@ -184,16 +187,19 @@ conversation 收到动作后可以选择：
 4. memory 加载或刷新 `ActiveMemoryContext`。
 5. memory 把新消息、conversation context、active memory context 一起交给 extractor。
 6. memory 抽取聚合候选事实，并拆分成当前 runtime 可处理的 `MemoryRecord`。
-7. memory 后续会检索更多相关记忆，完成更新、合并或冲突判断。
-8. memory 返回 `memory_context` 和 `context_actions`。
-9. conversation 执行允许的 `context_actions`。
-10. 如果刚执行了摘要压缩，conversation 将新摘要放在原始 conversation context 开头。
-11. conversation 构造 LLM prompt：system prompt、压缩摘要、conversation context、memory context。
-12. conversation 调用 LLM。
-13. conversation 保存 assistant message。
-14. conversation 可选择再次调用 memory，让 assistant message 也进入记忆处理。
+7. memory 用候选记忆检索相关旧记忆，得到 direct/expanded 相关记录。
+8. memory reconciler 根据候选和相关旧记忆生成 `MemoryWritePlan`。
+9. memory writer 把 write plan 应用到当前 store。
+10. memory 用新建、挂载和复用的记忆刷新 `ActiveMemoryContext`。
+11. memory 返回 `memory_context` 和 `context_actions`。
+12. conversation 执行允许的 `context_actions`。
+13. 如果刚执行了摘要压缩，conversation 将新摘要放在原始 conversation context 开头。
+14. conversation 构造 LLM prompt：system prompt、压缩摘要、conversation context、memory context。
+15. conversation 调用 LLM。
+16. conversation 保存 assistant message。
+17. conversation 可选择再次调用 memory，让 assistant message 也进入记忆处理。
 
-第 14 步不是强制的。第一阶段可以只处理用户消息。
+第 17 步不是强制的。第一阶段可以只处理用户消息。
 
 ## 8. 失败策略
 
@@ -213,7 +219,8 @@ memory 失败不应该阻断基础对话能力。
 
 - `memory/models.py`：中立数据契约。
 - `memory/interfaces.py`：memory 系统、抽取、存储、检索、上下文策略接口。
-- `memory/system.py`：`InMemoryMemorySystem`，组合抽取、存储、活跃缓存、检索和上下文策略。
+- `memory/system.py`：`InMemoryMemorySystem`，组合抽取、候选检索、reconciliation、
+  write plan application、活跃缓存、prompt 检索和上下文策略。
 - `memory/config.py`：memory runtime 配置，例如是否启用 LLM 抽取、抽取模型、抽取温度和上下文条数。
 - `memory/storage/in_memory.py`：进程内记忆记录 store，不持久化。
 - `memory/context/cache.py`：进程内 `ActiveMemoryContext` 缓存。
