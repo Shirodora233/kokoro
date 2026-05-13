@@ -231,6 +231,9 @@ memory 失败不应该阻断基础对话能力。
 - `memory/reconciliation/models.py`：reconciliation 请求、证据、操作和 write plan DTO。write plan 只描述 create/reuse/attach/ignore/flag_conflict，不直接修改 store。
 - `memory/reconciliation/interfaces.py`：`MemoryReconciler` 协议，后续 LLM reconciler 和确定性 reconciler 使用同一接口。
 - `memory/reconciliation/deterministic.py`：确定性 baseline reconciler，基于 candidate retriever 的 grouped result 生成最小 write plan。
+- `memory/writing/models.py`：write request、write result 和失败 DTO。
+- `memory/writing/interfaces.py`：`MemoryWritePlanApplier` 协议，负责把 write plan 应用到具体 store。
+- `memory/writing/in_memory.py`：进程内 write plan applier，处理 create/reuse/attach/ignore/flag_conflict，并维护 candidate id 到最终 record id 的映射。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。
 - `memory/__init__.py`：公共导出。
 

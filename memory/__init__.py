@@ -64,6 +64,13 @@ from .reconciliation import (
     WriteAction,
 )
 from .system import InMemoryMemorySystem
+from .writing import (
+    InMemoryMemoryWritePlanApplier,
+    MemoryWriteFailure,
+    MemoryWritePlanApplier,
+    MemoryWriteRequest,
+    MemoryWriteResult,
+)
 
 __all__ = [
     "ActiveMemoryContext",
@@ -94,10 +101,15 @@ __all__ = [
     "MemorySystem",
     "MemoryTurnInput",
     "MemoryTurnResult",
+    "MemoryWriteFailure",
     "MemoryWriteOperation",
     "MemoryWritePlan",
+    "MemoryWritePlanApplier",
+    "MemoryWriteRequest",
+    "MemoryWriteResult",
     "ObjectType",
     "InMemoryMemorySystem",
+    "InMemoryMemoryWritePlanApplier",
     "LLMMemoryExtractionClient",
     "LLMMemoryExtractor",
     "NoopMemorySystem",
