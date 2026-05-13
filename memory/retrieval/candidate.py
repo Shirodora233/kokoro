@@ -103,8 +103,11 @@ class CandidateMemoryRetriever:
         index = self._build_index(stored_records)
         candidate_index = self._build_candidate_index(candidates)
         related: dict[str, _MutableRelated] = {}
+        related_by_candidate: dict[str | None, dict[str, _MutableRelated]] = {}
 
         for candidate in candidates:
+            candidate_id = _client_id(candidate) or candidate.id
+            candidate_related = related_by_candidate.setdefault(candidate_id, {})
             for record in stored_records:
                 score, reasons = self._score_pair(
                     candidate=candidate,
@@ -121,22 +124,36 @@ class CandidateMemoryRetriever:
                     reasons=reasons,
                     matched_candidate=candidate,
                 )
+                self._add_related(
+                    related=candidate_related,
+                    record=record,
+                    score=score,
+                    reasons=reasons,
+                    matched_candidate=candidate,
+                )
 
         if self.expand_one_hop:
             self._expand_related_links(related, index)
+            for candidate_related in related_by_candidate.values():
+                self._expand_related_links(candidate_related, index)
 
         selected_limit = self.default_limit if limit is None else max(0, limit)
         selected = sorted(
             related.values(),
             key=lambda item: (-item.score, item.record.memory_type, item.record.text),
         )[:selected_limit]
+        selected_keys = {_stable_record_key(item.record) for item in selected}
         related_records = [
             self._freeze_related(item)
             for item in selected
         ]
         return CandidateRetrievalResult(
             records=related_records,
-            groups=self._build_groups(candidates, related_records),
+            groups=self._build_groups(
+                candidates,
+                related_by_candidate,
+                selected_keys,
+            ),
             metadata={
                 "retriever": "candidate_in_memory",
                 "candidate_count": len(candidates),
@@ -163,16 +180,16 @@ class CandidateMemoryRetriever:
     def _build_groups(
         self,
         candidates: Sequence[MemoryRecord],
-        related_records: Sequence[RelatedMemory],
+        related_by_candidate: dict[str | None, dict[str, _MutableRelated]],
+        selected_keys: set[str],
     ) -> list[CandidateRelatedGroup]:
         groups: list[CandidateRelatedGroup] = []
         for candidate in candidates:
             candidate_id = _client_id(candidate) or candidate.id
-            candidate_related = [
-                related
-                for related in related_records
-                if related.matched_candidate_id == candidate_id
-            ]
+            candidate_related = self._freeze_candidate_related(
+                related_by_candidate.get(candidate_id, {}),
+                selected_keys,
+            )
             groups.append(
                 CandidateRelatedGroup(
                     candidate_id=candidate_id,
@@ -189,6 +206,27 @@ class CandidateMemoryRetriever:
                 )
             )
         return groups
+
+    def _freeze_candidate_related(
+        self,
+        related: dict[str, _MutableRelated],
+        selected_keys: set[str],
+    ) -> list[RelatedMemory]:
+        selected = [
+            item for item in related.values()
+            if _stable_record_key(item.record) in selected_keys
+        ]
+        return [
+            self._freeze_related(item)
+            for item in sorted(
+                selected,
+                key=lambda item: (
+                    -item.score,
+                    item.record.memory_type,
+                    item.record.text,
+                ),
+            )
+        ]
 
     def _score_pair(
         self,

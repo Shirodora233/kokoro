@@ -40,9 +40,7 @@ class DeterministicMemoryReconciler:
             candidate = candidate_by_id.get(group.candidate_id or "")
             if not candidate:
                 continue
-            if candidate.memory_type in DEPENDENT_TYPES and not group.direct_matches:
-                continue
-            if candidate.memory_type == "property" and not group.direct_matches:
+            if not self._same_type_direct_matches(group):
                 continue
             operation = self._operation_for_group(group, candidate)
             operations.append(operation)
@@ -217,14 +215,19 @@ class DeterministicMemoryReconciler:
         self,
         group: CandidateRelatedGroup,
     ) -> RelatedMemory | None:
-        same_type = [
-            related for related in group.direct_matches
-            if related.record.memory_type == group.candidate_type
-        ]
-        matches = same_type or group.direct_matches
+        matches = self._same_type_direct_matches(group)
         if not matches:
             return None
         return max(matches, key=lambda related: related.score)
+
+    def _same_type_direct_matches(
+        self,
+        group: CandidateRelatedGroup,
+    ) -> list[RelatedMemory]:
+        return [
+            related for related in group.direct_matches
+            if related.record.memory_type == group.candidate_type
+        ]
 
     def _mark_resolved(
         self,

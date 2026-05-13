@@ -25,6 +25,7 @@ def main() -> int:
         test_creates_unmatched_entity,
         test_attaches_property_to_created_entity_candidate,
         test_attaches_property_to_reused_entity,
+        test_property_does_not_reuse_parent_entity_text_match,
         test_reuses_direct_property_match,
         test_attaches_description_to_reused_event,
         test_plan_is_provider_neutral_dict,
@@ -106,6 +107,29 @@ def test_attaches_property_to_reused_entity() -> None:
     assert property_operation.target_record_id == "ent_tea"
     assert property_operation.target_candidate_id == "cand_tea"
     assert property_operation.relation_type == "has_property"
+
+
+def test_property_does_not_reuse_parent_entity_text_match() -> None:
+    store = InMemoryMemoryStore(
+        [_record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea")]
+    )
+    candidates = [
+        _candidate("entity", "茉莉花茶", client_id="cand_tea"),
+        _candidate(
+            "property",
+            "用户偏好茉莉花茶少糖",
+            client_id="cand_prop",
+            metadata={
+                "entity_client_id": "cand_tea",
+                "property_type": "preference",
+            },
+        ),
+    ]
+    plan = _plan(store, candidates)
+    property_operation = _operation(plan, "cand_prop")
+    assert property_operation.action == "attach"
+    assert property_operation.existing_record_id is None
+    assert property_operation.target_record_id == "ent_tea"
 
 
 def test_reuses_direct_property_match() -> None:

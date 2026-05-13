@@ -28,6 +28,7 @@ def main() -> int:
         test_groups_keep_direct_and_expanded_separate,
         test_groups_include_unmatched_candidates,
         test_groups_separate_multiple_candidates,
+        test_groups_preserve_shared_record_matches,
         test_scope_filtering,
         test_unrelated_candidate_returns_empty,
     ]
@@ -280,6 +281,40 @@ def test_groups_separate_multiple_candidates() -> None:
     assert radio_group is not None
     assert _related_ids(tea_group.direct_matches) == {"ent_tea"}
     assert _related_ids(radio_group.direct_matches) == {"ent_radio"}
+
+
+def test_groups_preserve_shared_record_matches() -> None:
+    store = InMemoryMemoryStore(
+        [
+            _record(
+                "evt_radio",
+                "event",
+                "蓝色收音机故事元素",
+                client_id="evt_radio",
+                metadata={"event_type": "story_beat"},
+            ),
+            _record("ent_radio", "entity", "蓝色收音机", client_id="ent_radio"),
+        ]
+    )
+    result = CandidateMemoryRetriever(store).retrieve_related(
+        [
+            _candidate(
+                "event",
+                "蓝色收音机播报天气",
+                client_id="cand_event",
+                metadata={"event_type": "story_beat"},
+            ),
+            _candidate("entity", "蓝色收音机", client_id="cand_radio"),
+        ],
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+    )
+    event_group = _group(result, "cand_event")
+    radio_group = _group(result, "cand_radio")
+    assert event_group is not None
+    assert radio_group is not None
+    assert "evt_radio" in _related_ids(event_group.direct_matches)
+    assert "ent_radio" in _related_ids(radio_group.direct_matches)
 
 
 def test_scope_filtering() -> None:

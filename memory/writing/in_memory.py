@@ -72,6 +72,11 @@ class InMemoryMemoryWritePlanApplier:
                 continue
             if operation.candidate_type in RELATION_TYPES | ATTACHABLE_TYPES:
                 continue
+            existing_record = self._same_plan_record(operation, state)
+            if existing_record is not None:
+                state.reused_records.append(existing_record)
+                self._map_candidate(operation, existing_record, state)
+                continue
             self._save_operation_record(
                 operation=operation,
                 request=request,
@@ -157,6 +162,7 @@ class InMemoryMemoryWritePlanApplier:
         stored = list(self.store.save_records([record]))[0]
         bucket.append(stored)
         self._map_candidate(operation, stored, state)
+        self._remember_same_plan_record(stored, state)
 
     def _record_for_write(
         self,
@@ -256,6 +262,57 @@ class InMemoryMemoryWritePlanApplier:
         if operation.candidate_id and record.id:
             state.candidate_record_ids[operation.candidate_id] = record.id
 
+    def _same_plan_record(
+        self,
+        operation: MemoryWriteOperation,
+        state: "_ApplyState",
+    ) -> MemoryRecord | None:
+        if operation.record is None:
+            return None
+        key = self._same_plan_key(operation.record)
+        if key is None:
+            return None
+        return state.same_plan_records.get(key)
+
+    def _remember_same_plan_record(
+        self,
+        record: MemoryRecord,
+        state: "_ApplyState",
+    ) -> None:
+        key = self._same_plan_key(record)
+        if key is not None:
+            state.same_plan_records.setdefault(key, record)
+
+    def _same_plan_key(self, record: MemoryRecord) -> tuple[object, ...] | None:
+        if record.memory_type != "time_ref":
+            return None
+        metadata = record.metadata
+        time_kind = metadata.get("time_kind")
+        timeline_kind = metadata.get("timeline_kind")
+        timezone = metadata.get("anchor_timezone")
+        if time_kind in {"exact", "relative"}:
+            resolved_start = metadata.get("resolved_start")
+            if not isinstance(resolved_start, str) or not resolved_start.strip():
+                return None
+            return (
+                "time_ref",
+                time_kind,
+                timeline_kind,
+                timezone,
+                resolved_start,
+                metadata.get("resolved_end"),
+                metadata.get("granularity"),
+            )
+        if time_kind == "recurring":
+            recurrence_text = metadata.get("recurrence_text")
+            if isinstance(recurrence_text, str) and recurrence_text.strip():
+                return ("time_ref", time_kind, timeline_kind, timezone, recurrence_text)
+        if time_kind == "duration":
+            duration_text = metadata.get("duration_text")
+            if isinstance(duration_text, str) and duration_text.strip():
+                return ("time_ref", time_kind, timeline_kind, timezone, duration_text)
+        return None
+
     def _fail(
         self,
         operation: MemoryWriteOperation,
@@ -274,3 +331,4 @@ class _ApplyState:
         self.conflict_operations: list[MemoryWriteOperation] = []
         self.failed_operations: list[MemoryWriteFailure] = []
         self.candidate_record_ids: dict[str, str] = {}
+        self.same_plan_records: dict[tuple[object, ...], MemoryRecord] = {}

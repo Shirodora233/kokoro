@@ -22,6 +22,7 @@ def main() -> int:
         test_attach_property_to_reused_entity,
         test_attach_property_to_created_entity,
         test_attach_link_resolves_candidate_endpoints,
+        test_duplicate_time_refs_in_same_plan_are_reused,
         test_ignore_does_not_write,
         test_missing_attach_target_fails,
     ]
@@ -158,6 +159,48 @@ def test_attach_link_resolves_candidate_endpoints() -> None:
     ][0]
     assert link.metadata["from_record_id"] == result.candidate_record_ids["cand_radio"]
     assert link.metadata["to_record_id"] == result.candidate_record_ids["cand_prop"]
+
+
+def test_duplicate_time_refs_in_same_plan_are_reused() -> None:
+    store = InMemoryMemoryStore()
+    result = _apply(
+        store,
+        [
+            _operation(
+                "create",
+                _candidate(
+                    "time_ref",
+                    "2026-05-13T10:00:00+08:00",
+                    "time_1",
+                    metadata={
+                        "time_kind": "exact",
+                        "timeline_kind": "real_world",
+                        "anchor_timezone": "Asia/Shanghai",
+                        "resolved_start": "2026-05-13T10:00:00+08:00",
+                        "granularity": "second",
+                    },
+                ),
+            ),
+            _operation(
+                "create",
+                _candidate(
+                    "time_ref",
+                    "2026-05-13T10:00:00+08:00",
+                    "time_2",
+                    metadata={
+                        "time_kind": "exact",
+                        "timeline_kind": "real_world",
+                        "anchor_timezone": "Asia/Shanghai",
+                        "resolved_start": "2026-05-13T10:00:00+08:00",
+                        "granularity": "second",
+                    },
+                ),
+            ),
+        ],
+    )
+    assert len(result.created_records) == 1
+    assert len(store.list_records(memory_type="time_ref")) == 1
+    assert result.candidate_record_ids["time_1"] == result.candidate_record_ids["time_2"]
 
 
 def test_ignore_does_not_write() -> None:

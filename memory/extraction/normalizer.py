@@ -18,6 +18,11 @@ from .schema import (
 )
 
 _UTC_OFFSET_PATTERN = re.compile(r"([+-]\d{2}:\d{2})$")
+_GENERIC_TIME_TEXT = {
+    "mentioned in message",
+    "message mention time",
+    "mentioned time",
+}
 
 
 @dataclass
@@ -308,13 +313,37 @@ class MemoryCandidateNormalizer:
     ) -> MemoryRecord:
         metadata = self._time_metadata(time, turn, fallback_source)
         metadata["candidate_client_id"] = time_id
+        source = self._source_or_fallback(time.source, fallback_source)
         return self._record(
             memory_type="time_ref",
-            text=time.raw_text or time.description or time.duration_text or "mentioned time",
-            source=self._source_or_fallback(time.source, fallback_source),
+            text=self._time_record_text(metadata, source),
+            source=source,
             turn=turn,
             metadata=metadata,
         )
+
+    def _time_record_text(self, metadata: dict[str, Any], source: SourceHint) -> str:
+        for key in (
+            "raw_text",
+            "description",
+            "duration_text",
+            "recurrence_text",
+            "resolved_start",
+        ):
+            value = metadata.get(key)
+            if self._specific_text(value):
+                return value.strip()
+        if self._specific_text(source.source_quote):
+            return source.source_quote.strip()
+        generic_raw = metadata.get("raw_text")
+        if isinstance(generic_raw, str) and generic_raw.strip():
+            return generic_raw.strip()
+        return "mentioned time"
+
+    def _specific_text(self, value: object) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        return value.strip().casefold() not in _GENERIC_TIME_TEXT
 
     def _time_link_record(
         self,
