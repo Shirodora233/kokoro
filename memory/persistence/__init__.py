@@ -1,4 +1,6 @@
-"""DTOs for future durable memory persistence."""
+"""DTOs and repository boundaries for durable memory persistence."""
+
+from .interfaces import PersistentMemoryRepository
 
 from .models import (
     Confidence,
@@ -28,6 +30,7 @@ __all__ = [
     "PersistentEvent",
     "PersistentLink",
     "PersistentMemoryBundle",
+    "PersistentMemoryRepository",
     "PersistentObjectRef",
     "PersistentProperty",
     "PersistentSourceRef",

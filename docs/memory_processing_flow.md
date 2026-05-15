@@ -140,6 +140,12 @@ write plan 应用到当前 `MemoryStore`。本地开发可以使用 `InMemoryMem
 信封和 source refs。后续替换语义检索或更细的数据库 repository 时，不需要再改 conversation
 边界。
 
+范式化持久层已经作为独立 repository 起步：`memory/persistence/postgres/` 会创建
+`memory_events`、`memory_descriptions`、`memory_entities`、`memory_properties`、
+`memory_links`、`memory_time_refs`、`memory_time_links` 和 `memory_sources`。这层当前还没有接入
+conversation turn runtime；下一步需要把 `MemoryWritePlan` 或候选 `MemoryRecord` 映射成
+`PersistentMemoryBundle`，再写入这个 repository。
+
 Extractor contract 当前采用聚合候选输出：
 
 - extractor 只负责尽可能提取候选事实，不负责检索已有记忆、不去重、不合并、不判定更新或最终写入。
@@ -237,7 +243,9 @@ memory 失败不应该阻断基础对话能力。
 - `memory/extraction/parser.py`：聚合候选 JSON 响应解析。
 - `memory/extraction/normalizer.py`：把聚合候选拆分为 `MemoryRecord`。
 - `memory/extraction/validation.py`：聚合候选校验，包括 event 必须有 description、时间字段契约等。
-- `memory/persistence/models.py`：未来数据库持久化 DTO，暂不接入 store。
+- `memory/persistence/models.py`：范式化持久记忆 DTO。
+- `memory/persistence/interfaces.py`：范式化持久记忆 repository 协议。
+- `memory/persistence/postgres/`：PostgreSQL 范式化持久记忆 repository 和 schema。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的 store 检索与 prompt context 渲染。
 - `memory/retrieval/candidate.py`：面向 reconciliation 的候选检索，输入抽取候选，返回相关旧记忆、分数、命中原因和 direct/expanded 标记。结果同时提供全局 `records` 和按候选分组的 `groups`。第一版使用确定性规则，并严格只做一跳 link/time_link 扩展，不调用 LLM 或向量库。
@@ -256,5 +264,5 @@ memory 失败不应该阻断基础对话能力。
 
 - `memory/extraction/pipeline.py`：基于共享 `llm/` 的候选记忆抽取流程。
 - `memory/retrieval/vector.py` 或 `memory/retrieval/postgres.py`：语义检索或数据库检索。
-- `memory/storage/postgres/`：从通用 `MemoryRecord` store 演进到最终范式化 memory repository。
+- `memory/persistence/postgres/`：接入 runtime writer，让真实 conversation turn 写入范式化表。
 - `memory/context/policy.py`：真实上下文压缩策略。

@@ -530,6 +530,8 @@
 
 第一阶段建议只在当前 `users`、`sessions`、`messages` 之上新增记忆层表，不替换现有会话表。系统生命周期时间使用 `TIMESTAMPTZ`，结构化字段使用 `JSONB`。语义时间统一写入 `memory_time_refs`，并通过 `memory_time_links` 连接到各类记忆对象。
 
+当前实现位于 `memory/persistence/postgres/schema.sql`。为了保持 memory 系统可以脱离 conversation 单独工作，实际实现里的 `user_id`、`session_id`、`message_id` / `source_id` 都按外部引用 id 保存，不直接对 conversation 表建立外键。时间字段也以当前 DTO 为准：`time_kind` 使用 `exact`、`relative`、`vague`、`duration`、`recurring`，`timeline_kind` 使用 `real_world`、`fictional`。
+
 ### 11.1 `message_sections`（可选）
 
 第一阶段可以不创建 `message_sections`。记忆来源先直接引用 `messages.id`；如果后续需要精确到句子或字符范围，再增加这张可选表。

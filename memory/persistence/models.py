@@ -10,8 +10,11 @@ ObjectType = Literal[
     "description",
     "entity",
     "property",
+    "link",
     "time_ref",
+    "time_link",
     "message",
+    "message_section",
     "summary",
 ]
 Confidence = Literal["low", "medium", "high"]
