@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Sequence
 
+from ..interfaces import MemoryStore
 from ..models import MemoryRecord
 from ..reconciliation import MemoryWriteOperation
-from ..storage import InMemoryMemoryStore
 from .models import MemoryWriteFailure, MemoryWriteRequest, MemoryWriteResult
 
 RELATION_TYPES = {"link", "time_link"}
@@ -15,9 +15,9 @@ ATTACHABLE_TYPES = {"property", "description"}
 
 
 class InMemoryMemoryWritePlanApplier:
-    """Apply reconciled write plans to an `InMemoryMemoryStore`."""
+    """Apply reconciled write plans to a memory record store."""
 
-    def __init__(self, store: InMemoryMemoryStore) -> None:
+    def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
     def apply(self, request: MemoryWriteRequest) -> MemoryWriteResult:
@@ -38,7 +38,8 @@ class InMemoryMemoryWritePlanApplier:
             failed_operations=state.failed_operations,
             candidate_record_ids=dict(state.candidate_record_ids),
             metadata={
-                "applier": "in_memory",
+                "applier": "record_store_write_plan",
+                "store": self.store.__class__.__name__,
                 "operation_count": len(operations),
                 "created_count": len(state.created_records),
                 "reused_count": len(state.reused_records),

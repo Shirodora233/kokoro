@@ -5,25 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 from threading import RLock
 from typing import Sequence
-from uuid import uuid4
 
 from ..models import MemoryRecord, MemoryRecordType
-
-_ID_PREFIXES: dict[MemoryRecordType, str] = {
-    "event": "evt",
-    "description": "desc",
-    "entity": "ent",
-    "property": "prop",
-    "link": "link",
-    "time_ref": "time",
-    "time_link": "tlink",
-    "summary": "sum",
-}
-
-
-def _new_memory_id(memory_type: MemoryRecordType) -> str:
-    prefix = _ID_PREFIXES.get(memory_type, "mem")
-    return f"{prefix}_{uuid4().hex}"
+from .ids import new_memory_id
 
 
 class InMemoryMemoryStore:
@@ -43,7 +27,7 @@ class InMemoryMemoryStore:
         stored_records: list[MemoryRecord] = []
         with self._lock:
             for record in records:
-                record_id = record.id or _new_memory_id(record.memory_type)
+                record_id = record.id or new_memory_id(record.memory_type)
                 stored_record = record if record.id else replace(record, id=record_id)
                 self._records[record_id] = stored_record
                 stored_records.append(stored_record)

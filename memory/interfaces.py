@@ -8,6 +8,7 @@ from .models import (
     ContextAction,
     MemoryContextBlock,
     MemoryRecord,
+    MemoryRecordType,
     MemoryRetrievalRequest,
     MemoryRetrievalResult,
     MemoryTurnInput,
@@ -40,6 +41,15 @@ class MemoryStore(Protocol):
 
     def get_records(self, record_ids: Sequence[str]) -> Sequence[MemoryRecord]:
         """Load stored memory records by id."""
+
+    def list_records(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        memory_type: MemoryRecordType | None = None,
+        limit: int | None = None,
+    ) -> list[MemoryRecord]:
+        """Load memory records by scope and type."""
 
 
 class MemoryRetriever(Protocol):

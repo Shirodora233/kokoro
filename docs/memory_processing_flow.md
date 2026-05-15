@@ -132,10 +132,13 @@ MemoryTurnResult(
 - `created_memories`：本次新建的记忆记录。
 - `updated_memories`：本次更新、合并或失效的记忆记录。
 
-第一阶段使用进程内 memory runtime：store、active context cache、retriever、reconciler、writer 和
-conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和
+第一阶段使用可替换 store 的 memory runtime：active context cache、retriever、reconciler、writer
+和 conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和
 active memory context 中抽取候选记忆；memory runtime 再检索相关旧记忆、生成 write plan，并把
-write plan 应用到内存 store。后续替换语义检索或数据库存储时，不需要再改 conversation 边界。
+write plan 应用到当前 `MemoryStore`。本地开发可以使用 `InMemoryMemoryStore`；当 conversation
+使用 PostgreSQL 后端时，默认会同步使用 `PostgresMemoryStore` 保存当前通用 `MemoryRecord`
+信封和 source refs。后续替换语义检索或更细的数据库 repository 时，不需要再改 conversation
+边界。
 
 Extractor contract 当前采用聚合候选输出：
 
@@ -215,7 +218,7 @@ memory 失败不应该阻断基础对话能力。
 
 ## 9. 当前接口位置
 
-当前已经建立接口，并提供一个进程内实现：
+当前已经建立接口，并提供进程内和 PostgreSQL store：
 
 - `memory/models.py`：中立数据契约。
 - `memory/interfaces.py`：memory 系统、抽取、存储、检索、上下文策略接口。
@@ -223,6 +226,9 @@ memory 失败不应该阻断基础对话能力。
   write plan application、活跃缓存、prompt 检索和上下文策略。
 - `memory/config.py`：memory runtime 配置，例如是否启用 LLM 抽取、抽取模型、抽取温度和上下文条数。
 - `memory/storage/in_memory.py`：进程内记忆记录 store，不持久化。
+- `memory/storage/ids.py`：不同记忆类型的 id 前缀和 id 生成。
+- `memory/storage/postgres/`：PostgreSQL 版 memory store，当前保存通用 `MemoryRecord`
+  和 `MemorySourceRef`；不是最终范式化记忆表的完整 repository。
 - `memory/context/cache.py`：进程内 `ActiveMemoryContext` 缓存。
 - `memory/context/policy.py`：暂不生成压缩动作的 policy。
 - `memory/extraction/pipeline.py`：最小 LLM 抽取流程，负责调用模型、解析聚合响应并规范化为 `MemoryRecord`。
@@ -233,14 +239,16 @@ memory 失败不应该阻断基础对话能力。
 - `memory/extraction/validation.py`：聚合候选校验，包括 event 必须有 description、时间字段契约等。
 - `memory/persistence/models.py`：未来数据库持久化 DTO，暂不接入 store。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
-- `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的内存检索与 prompt context 渲染。
+- `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的 store 检索与 prompt context 渲染。
 - `memory/retrieval/candidate.py`：面向 reconciliation 的候选检索，输入抽取候选，返回相关旧记忆、分数、命中原因和 direct/expanded 标记。结果同时提供全局 `records` 和按候选分组的 `groups`。第一版使用确定性规则，并严格只做一跳 link/time_link 扩展，不调用 LLM 或向量库。
 - `memory/reconciliation/models.py`：reconciliation 请求、证据、操作和 write plan DTO。write plan 只描述 create/reuse/attach/ignore/flag_conflict，不直接修改 store。
 - `memory/reconciliation/interfaces.py`：`MemoryReconciler` 协议，后续 LLM reconciler 和确定性 reconciler 使用同一接口。
 - `memory/reconciliation/deterministic.py`：确定性 baseline reconciler，基于 candidate retriever 的 grouped result 生成最小 write plan。
 - `memory/writing/models.py`：write request、write result 和失败 DTO。
 - `memory/writing/interfaces.py`：`MemoryWritePlanApplier` 协议，负责把 write plan 应用到具体 store。
-- `memory/writing/in_memory.py`：进程内 write plan applier，处理 create/reuse/attach/ignore/flag_conflict，并维护 candidate id 到最终 record id 的映射。
+- `memory/writing/in_memory.py`：当前通用 write plan applier，处理 create/reuse/attach/ignore/flag_conflict，
+  并维护 candidate id 到最终 record id 的映射；名字保留为历史原因，但依赖的是 `MemoryStore`
+  协议，不再绑定进程内 store。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。
 - `memory/__init__.py`：公共导出。
 
@@ -248,5 +256,5 @@ memory 失败不应该阻断基础对话能力。
 
 - `memory/extraction/pipeline.py`：基于共享 `llm/` 的候选记忆抽取流程。
 - `memory/retrieval/vector.py` 或 `memory/retrieval/postgres.py`：语义检索或数据库检索。
-- `memory/storage/postgres/`：数据库持久化。
+- `memory/storage/postgres/`：从通用 `MemoryRecord` store 演进到最终范式化 memory repository。
 - `memory/context/policy.py`：真实上下文压缩策略。

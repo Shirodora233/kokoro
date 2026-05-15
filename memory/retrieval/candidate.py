@@ -6,8 +6,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Iterable, Sequence
 
+from ..interfaces import MemoryStore
 from ..models import MemoryRecord
-from ..storage import InMemoryMemoryStore
 
 _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _CJK_CHUNK_PATTERN = re.compile(r"[\u4e00-\u9fff]+")
@@ -82,7 +82,7 @@ class CandidateMemoryRetriever:
 
     def __init__(
         self,
-        store: InMemoryMemoryStore,
+        store: MemoryStore,
         min_score: float = 1.0,
         default_limit: int = 30,
         expand_one_hop: bool = True,
@@ -155,7 +155,8 @@ class CandidateMemoryRetriever:
                 selected_keys,
             ),
             metadata={
-                "retriever": "candidate_in_memory",
+                "retriever": "candidate_rule_based",
+                "store": self.store.__class__.__name__,
                 "candidate_count": len(candidates),
                 "stored_record_count": len(stored_records),
                 "related_count": len(related),

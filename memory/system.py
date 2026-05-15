@@ -7,7 +7,13 @@ from typing import Sequence
 
 from .context import InMemoryActiveMemoryCache, NoopContextPolicy
 from .extraction import NoopMemoryExtractor
-from .interfaces import ContextPolicy, MemoryExtractor, MemoryRetriever, MemorySystem
+from .interfaces import (
+    ContextPolicy,
+    MemoryExtractor,
+    MemoryRetriever,
+    MemoryStore,
+    MemorySystem,
+)
 from .models import (
     ActiveMemoryContext,
     MemoryRecord,
@@ -35,7 +41,7 @@ class InMemoryMemorySystem(MemorySystem):
 
     def __init__(
         self,
-        store: InMemoryMemoryStore | None = None,
+        store: MemoryStore | None = None,
         extractor: MemoryExtractor | None = None,
         retriever: MemoryRetriever | None = None,
         candidate_retriever: CandidateMemoryRetriever | None = None,
@@ -125,7 +131,8 @@ class InMemoryMemorySystem(MemorySystem):
             context_actions=context_actions,
             created_memories=created_records,
             metadata={
-                "memory_runtime": "in_memory",
+                "memory_runtime": self.__class__.__name__,
+                "memory_store": self.store.__class__.__name__,
                 "active_memory_context": refreshed_context.to_record(),
                 "retrieval": retrieval_result.metadata,
                 "candidate_retrieval": candidate_retrieval.to_record(),

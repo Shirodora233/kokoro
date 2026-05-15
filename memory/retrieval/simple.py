@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from ..interfaces import MemoryContextRenderer
+from ..interfaces import MemoryContextRenderer, MemoryStore
 from ..models import (
     ActiveMemoryContext,
     MemoryContextBlock,
@@ -12,7 +12,6 @@ from ..models import (
     MemoryRetrievalRequest,
     MemoryRetrievalResult,
 )
-from ..storage import InMemoryMemoryStore
 
 
 class SimpleMemoryContextRenderer:
@@ -47,7 +46,7 @@ class InMemoryMemoryRetriever:
 
     def __init__(
         self,
-        store: InMemoryMemoryStore,
+        store: MemoryStore,
         renderer: MemoryContextRenderer | None = None,
         default_limit: int = 8,
     ) -> None:
@@ -77,7 +76,8 @@ class InMemoryMemoryRetriever:
             memory_context=context_blocks,
             records=selected_records,
             metadata={
-                "retriever": "in_memory",
+                "retriever": "simple_scope_text",
+                "store": self.store.__class__.__name__,
                 "record_count": len(selected_records),
                 "total_candidates": len(records),
             },
