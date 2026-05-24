@@ -6,6 +6,11 @@ from .candidate import (
     CandidateRetrievalResult,
     RelatedMemory,
 )
+from .normalized import (
+    NormalizedEntityMemoryView,
+    NormalizedEventMemoryView,
+    NormalizedMemoryRetriever,
+)
 from .simple import InMemoryMemoryRetriever, SimpleMemoryContextRenderer
 
 __all__ = [
@@ -13,6 +18,9 @@ __all__ = [
     "CandidateRelatedGroup",
     "CandidateRetrievalResult",
     "InMemoryMemoryRetriever",
+    "NormalizedEntityMemoryView",
+    "NormalizedEventMemoryView",
+    "NormalizedMemoryRetriever",
     "RelatedMemory",
     "SimpleMemoryContextRenderer",
 ]

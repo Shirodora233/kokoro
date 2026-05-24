@@ -137,14 +137,18 @@ MemoryTurnResult(
 active memory context 中抽取候选记忆；memory runtime 再检索相关旧记忆、生成 write plan，并把
 write plan 应用到当前 `MemoryStore`。本地开发可以使用 `InMemoryMemoryStore`；当 conversation
 使用 PostgreSQL 后端时，默认会同步使用 `PostgresMemoryStore` 保存当前通用 `MemoryRecord`
-信封和 source refs。后续替换语义检索或更细的数据库 repository 时，不需要再改 conversation
-边界。
+信封和 source refs。candidate retrieval 继续读取这个 generic store 给 reconciler 查重、reuse
+和 attach；prompt retrieval 在 PostgreSQL 后端默认读取范式化 repository，避免把 raw
+`link`、`time_link` 等机器关系直接放进 prompt。
 
 范式化持久层已经作为独立 repository 起步：`memory/persistence/postgres/` 会创建
 `memory_events`、`memory_descriptions`、`memory_entities`、`memory_properties`、
 `memory_links`、`memory_time_refs`、`memory_time_links` 和 `memory_sources`。当 conversation 使用
 PostgreSQL 后端时，runtime 会通过 `MemoryWriteResultPersistenceSync` 把本轮 write result 中的
 `MemoryRecord` 映射成 `PersistentMemoryBundle`，再写入范式化 repository。
+`NormalizedMemoryRetriever` 会从这些表中组装 event/entity 视图：event 自动带 description、
+related entity 和 time；entity 自动带 property 和 related event。source 和 link 仍可追溯，但默认
+不作为 prompt 可见文本。
 
 Extractor contract 当前采用聚合候选输出：
 
@@ -251,6 +255,8 @@ memory 失败不应该阻断基础对话能力。
 - `memory/persistence/postgres/`：PostgreSQL 范式化持久记忆 repository 和 schema。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的 store 检索与 prompt context 渲染。
+- `memory/retrieval/normalized.py`：基于范式化 repository 的 prompt retrieval；渲染 event/entity
+  视图，并隐藏 raw link/time_link 等低层关系对象。
 - `memory/retrieval/candidate.py`：面向 reconciliation 的候选检索，输入抽取候选，返回相关旧记忆、分数、命中原因和 direct/expanded 标记。结果同时提供全局 `records` 和按候选分组的 `groups`。第一版使用确定性规则，并严格只做一跳 link/time_link 扩展，不调用 LLM 或向量库。
 - `memory/reconciliation/models.py`：reconciliation 请求、证据、操作和 write plan DTO。write plan 只描述 create/reuse/attach/ignore/flag_conflict，不直接修改 store。
 - `memory/reconciliation/interfaces.py`：`MemoryReconciler` 协议，后续 LLM reconciler 和确定性 reconciler 使用同一接口。
@@ -266,5 +272,5 @@ memory 失败不应该阻断基础对话能力。
 后续实现可以继续拆分：
 
 - `memory/extraction/pipeline.py`：基于共享 `llm/` 的候选记忆抽取流程。
-- `memory/retrieval/postgres.py` 或 `memory/retrieval/vector.py`：从范式化表/embedding 中取回长期记忆。
+- `memory/retrieval/vector.py`：在 normalized retrieval 之下增加 embedding/ranking。
 - `memory/context/policy.py`：真实上下文压缩策略。

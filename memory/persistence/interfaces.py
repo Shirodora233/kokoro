@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, Sequence
 
 from .models import (
+    PersistentObjectRef,
     PersistentDescription,
     PersistentEntity,
     PersistentEvent,
@@ -58,3 +59,42 @@ class PersistentMemoryRepository(Protocol):
         limit: int | None = None,
     ) -> list[PersistentEntity]:
         """List entities by scope."""
+
+    def list_descriptions(
+        self,
+        event_ids: Sequence[str] | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentDescription]:
+        """List active descriptions by parent event or scope."""
+
+    def list_properties(
+        self,
+        entity_ids: Sequence[str] | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentProperty]:
+        """List active properties by parent entity or scope."""
+
+    def list_links(
+        self,
+        object_refs: Sequence[PersistentObjectRef] | None = None,
+        user_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentLink]:
+        """List active links touching the given objects."""
+
+    def list_time_links(
+        self,
+        target_refs: Sequence[PersistentObjectRef] | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentTimeLink]:
+        """List time links for the given target objects."""
+
+    def get_time_refs(
+        self,
+        time_ref_ids: Sequence[str],
+    ) -> list[PersistentTimeRef]:
+        """Load semantic time references by id."""

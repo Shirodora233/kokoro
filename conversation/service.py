@@ -16,12 +16,14 @@ from memory import (
     MemoryContextBlock,
     MemoryExtractionPromptBuilder,
     MemoryInputMessage,
+    MemoryRetriever,
     MemoryRuntimeConfig,
     MemoryStore,
     MemorySystem,
     MemoryTurnInput,
     MemoryTurnResult,
     MemoryWriteResultPersistenceSync,
+    NormalizedMemoryRetriever,
     InMemoryMemorySystem,
 )
 
@@ -61,6 +63,7 @@ class ConversationService:
         runtime_config = ConversationRuntimeConfig.from_env(env_file)
         memory_config = MemoryRuntimeConfig.from_env(env_file)
         memory_store: MemoryStore | None = None
+        memory_retriever: MemoryRetriever | None = None
         persistence_sync: MemoryWriteResultPersistenceSync | None = None
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
@@ -69,19 +72,25 @@ class ConversationService:
 
             store = PostgresConversationStore(storage_config.database_url or "")
             memory_store = PostgresMemoryStore(storage_config.database_url or "")
-            persistence_sync = MemoryWriteResultPersistenceSync(
-                PostgresPersistentMemoryRepository(storage_config.database_url or "")
+            persistent_repository = PostgresPersistentMemoryRepository(
+                storage_config.database_url or ""
             )
+            persistence_sync = MemoryWriteResultPersistenceSync(
+                persistent_repository
+            )
+            memory_retriever = NormalizedMemoryRetriever(persistent_repository)
         else:
             store = JsonConversationStore(data_dir or default_data_dir())
         chat_client = OpenAIChatClient(config)
         memory_system = InMemoryMemorySystem(
             store=memory_store,
+            retriever=memory_retriever,
             persistence_sync=persistence_sync,
         )
         if memory_config.extraction_enabled:
             memory_system = InMemoryMemorySystem(
                 store=memory_store,
+                retriever=memory_retriever,
                 persistence_sync=persistence_sync,
                 extractor=LLMMemoryExtractor(
                     chat_client=chat_client,

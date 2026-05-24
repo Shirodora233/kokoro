@@ -213,11 +213,14 @@ LLM provider 抽象位于 `llm/`，包括 `ChatClient`、`ChatMessageParam`、`L
 
 ## 记忆运行时
 
-`memory/` 是独立于 `conversation/` 的记忆系统边界。当前默认启用进程内 `InMemoryMemorySystem`：
+`memory/` 是独立于 `conversation/` 的记忆系统边界。当前 runtime 仍由
+`InMemoryMemorySystem` 组合组件，但 store / retriever / persistence 都可以替换：
 
-- 记忆记录暂存在进程内，不持久化。
 - 默认通过 `LLMMemoryExtractor` 从新消息和近期上下文中抽取候选记忆。
-- 已具备 active memory context 缓存、简单检索和 prompt context 注入链路。
+- PostgreSQL 后端会同时写入 generic `memory_records` 和范式化 memory tables。
+- prompt retrieval 在 PostgreSQL 后端使用 normalized retriever，从 event/entity/property/time
+  关系中组装干净上下文，不把 raw `link` / `time_link` 直接塞进 prompt。
+- candidate retrieval 仍使用 generic `MemoryStore` 给 reconciler 查重、reuse 和 attach。
 - 可通过传入 `NoopMemorySystem` 临时关闭记忆链路。
 
 抽取实现拆在 `memory/extraction/`：`pipeline.py` 负责流程编排，`llm.py` 只负责调用模型，`prompt.py`、`parser.py`、`normalizer.py` 分别负责提示词、JSON 解析和候选规范化。

@@ -2,7 +2,7 @@
 
 Memory tests are grouped by subsystem:
 
-- `retrieval/`：candidate-aware deterministic retrieval.
+- `retrieval/`：candidate-aware retrieval and normalized prompt retrieval.
 - `reconciliation/`：deterministic write-plan generation.
 - `writing/`：write-plan application to a memory store.
 - `system/`：deterministic memory runtime orchestration.

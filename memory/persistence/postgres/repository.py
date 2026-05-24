@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Sequence
 
 from psycopg.types.json import Jsonb
 
@@ -14,6 +14,7 @@ from ..models import (
     PersistentEvent,
     PersistentLink,
     PersistentMemoryBundle,
+    PersistentObjectRef,
     PersistentProperty,
     PersistentTimeLink,
     PersistentTimeRef,
@@ -245,6 +246,199 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 )
                 for row in rows
             ]
+
+    def list_descriptions(
+        self,
+        event_ids: Sequence[str] | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentDescription]:
+        conditions = ["status = 'active'"]
+        params: list[object] = []
+        ids = _compact_ids(event_ids) if event_ids is not None else None
+        if ids is not None:
+            if not ids:
+                return []
+            conditions.append(f"event_id IN ({_placeholders(ids)})")
+            params.extend(ids)
+        elif user_id is not None or session_id is not None:
+            conditions.append("(user_id IS NULL OR user_id = %s)")
+            params.append(user_id)
+            conditions.append("(session_id IS NULL OR session_id = %s)")
+            params.append(session_id)
+        query = (
+            "SELECT * FROM memory_descriptions WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY updated_at DESC, id ASC"
+        )
+        if limit is not None:
+            query += " LIMIT %s"
+            params.append(max(0, limit))
+        with self.database.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+            return [
+                description_from_row(
+                    row,
+                    self.sources.load_source_refs(
+                        connection,
+                        "description",
+                        row["id"],
+                    ),
+                )
+                for row in rows
+            ]
+
+    def list_properties(
+        self,
+        entity_ids: Sequence[str] | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentProperty]:
+        conditions = ["status = 'active'"]
+        params: list[object] = []
+        ids = _compact_ids(entity_ids) if entity_ids is not None else None
+        if ids is not None:
+            if not ids:
+                return []
+            conditions.append(f"entity_id IN ({_placeholders(ids)})")
+            params.extend(ids)
+        elif user_id is not None or session_id is not None:
+            conditions.append("(user_id IS NULL OR user_id = %s)")
+            params.append(user_id)
+            conditions.append("(session_id IS NULL OR session_id = %s)")
+            params.append(session_id)
+        query = (
+            "SELECT * FROM memory_properties WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY updated_at DESC, id ASC"
+        )
+        if limit is not None:
+            query += " LIMIT %s"
+            params.append(max(0, limit))
+        with self.database.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+            return [
+                property_from_row(
+                    row,
+                    self.sources.load_source_refs(connection, "property", row["id"]),
+                )
+                for row in rows
+            ]
+
+    def list_links(
+        self,
+        object_refs: Sequence[PersistentObjectRef] | None = None,
+        user_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentLink]:
+        conditions = ["status = 'active'"]
+        params: list[object] = []
+        refs = list(object_refs) if object_refs is not None else None
+        if refs is not None:
+            if not refs:
+                return []
+            ref_conditions: list[str] = []
+            for ref in refs:
+                ref_conditions.append(
+                    "((from_type = %s AND from_id = %s) "
+                    "OR (to_type = %s AND to_id = %s))"
+                )
+                params.extend(
+                    [
+                        ref.object_type,
+                        ref.object_id,
+                        ref.object_type,
+                        ref.object_id,
+                    ]
+                )
+            conditions.append("(" + " OR ".join(ref_conditions) + ")")
+        if user_id is not None:
+            conditions.append("(user_id IS NULL OR user_id = %s)")
+            params.append(user_id)
+        query = (
+            "SELECT * FROM memory_links WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY updated_at DESC, id ASC"
+        )
+        if limit is not None:
+            query += " LIMIT %s"
+            params.append(max(0, limit))
+        with self.database.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+            return [
+                link_from_row(
+                    row,
+                    self.sources.load_source_refs(connection, "link", row["id"]),
+                )
+                for row in rows
+            ]
+
+    def list_time_links(
+        self,
+        target_refs: Sequence[PersistentObjectRef] | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentTimeLink]:
+        conditions: list[str] = []
+        params: list[object] = []
+        refs = list(target_refs) if target_refs is not None else None
+        if refs is not None:
+            if not refs:
+                return []
+            ref_conditions: list[str] = []
+            for ref in refs:
+                ref_conditions.append("(target_type = %s AND target_id = %s)")
+                params.extend([ref.object_type, ref.object_id])
+            conditions.append("(" + " OR ".join(ref_conditions) + ")")
+        query = "SELECT * FROM memory_time_links"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY updated_at DESC, id ASC"
+        if limit is not None:
+            query += " LIMIT %s"
+            params.append(max(0, limit))
+        with self.database.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+            return [
+                time_link_from_row(
+                    row,
+                    self.sources.load_source_refs(connection, "time_link", row["id"]),
+                )
+                for row in rows
+            ]
+
+    def get_time_refs(
+        self,
+        time_ref_ids: Sequence[str],
+    ) -> list[PersistentTimeRef]:
+        ids = _compact_ids(time_ref_ids)
+        if not ids:
+            return []
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM memory_time_refs
+                WHERE id IN ({_placeholders(ids)})
+                """,
+                tuple(ids),
+            ).fetchall()
+            refs_by_id = {
+                row["id"]: time_ref_from_row(
+                    row,
+                    self.sources.load_source_refs(
+                        connection,
+                        "time_ref",
+                        row["id"],
+                    ),
+                )
+                for row in rows
+            }
+        return [
+            refs_by_id[time_ref_id]
+            for time_ref_id in ids
+            if time_ref_id in refs_by_id
+        ]
 
     def _save_event(
         self,
@@ -576,3 +770,11 @@ def _required_ref(value: str | None, name: str) -> str:
 def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
     value = metadata.get(key)
     return value if isinstance(value, str) else None
+
+
+def _compact_ids(values: Sequence[str]) -> list[str]:
+    return [value for value in values if value]
+
+
+def _placeholders(values: Sequence[object]) -> str:
+    return ", ".join(["%s"] * len(values))

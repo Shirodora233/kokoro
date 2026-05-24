@@ -6,11 +6,28 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from memory.models import MemoryRecord, MemoryRecordType, MemorySourceRef
+from memory.models import (
+    MemoryRecord,
+    MemoryRecordType,
+    MemoryRetrievalRequest,
+    MemorySourceRef,
+)
+from memory.persistence import (
+    PersistentDescription,
+    PersistentEntity,
+    PersistentEvent,
+    PersistentLink,
+    PersistentMemoryBundle,
+    PersistentObjectRef,
+    PersistentProperty,
+    PersistentTimeLink,
+    PersistentTimeRef,
+)
 from memory.retrieval import (
     CandidateMemoryRetriever,
     CandidateRelatedGroup,
     CandidateRetrievalResult,
+    NormalizedMemoryRetriever,
     RelatedMemory,
 )
 from memory.storage import InMemoryMemoryStore
@@ -31,6 +48,8 @@ def main() -> int:
         test_groups_preserve_shared_record_matches,
         test_scope_filtering,
         test_unrelated_candidate_returns_empty,
+        test_normalized_retrieval_renders_event_view_without_raw_links,
+        test_normalized_retrieval_query_matches_entity_property,
     ]
     for test in tests:
         test()
@@ -352,6 +371,43 @@ def test_unrelated_candidate_returns_empty() -> None:
     assert result.records == [], result.to_record()
 
 
+def test_normalized_retrieval_renders_event_view_without_raw_links() -> None:
+    result = NormalizedMemoryRetriever(_NormalizedFixtureRepository()).retrieve(
+        MemoryRetrievalRequest(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            query="林医生",
+            limit=4,
+        )
+    )
+    assert result.memory_context
+    content = result.memory_context[0].content
+
+    assert "Event: 复诊安排" in content
+    assert "Details: 用户计划明天上午十点和林医生复诊，地点在静安门诊。" in content
+    assert "Time: scheduled_for 明天上午十点" in content
+    assert "Entities: 林医生" in content
+    assert "link_visit_doctor" not in content
+    assert "tlink_visit_time" not in content
+    assert all(record.metadata["normalized"] for record in result.records)
+
+
+def test_normalized_retrieval_query_matches_entity_property() -> None:
+    result = NormalizedMemoryRetriever(_NormalizedFixtureRepository()).retrieve(
+        MemoryRetrievalRequest(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            query="复诊的医生",
+            limit=4,
+        )
+    )
+    content = result.memory_context[0].content
+
+    assert "Entity: 林医生 (person)" in content
+    assert "Properties: 林医生是用户此次复诊的医生。" in content
+    assert "link_visit_doctor" not in content
+
+
 def _record(
     record_id: str,
     memory_type: MemoryRecordType,
@@ -480,6 +536,194 @@ def _group(
         if group.candidate_id == candidate_id:
             return group
     return None
+
+
+class _NormalizedFixtureRepository:
+    def __init__(self) -> None:
+        self.bundle = PersistentMemoryBundle(
+            events=[
+                PersistentEvent(
+                    id="evt_visit",
+                    title="复诊安排",
+                    summary="用户计划和林医生复诊",
+                    event_type="appointment",
+                    user_id=USER_ID,
+                    session_id=SESSION_ID,
+                )
+            ],
+            descriptions=[
+                PersistentDescription(
+                    id="desc_visit",
+                    event_id="evt_visit",
+                    content="用户计划明天上午十点和林医生复诊，地点在静安门诊。",
+                    user_id=USER_ID,
+                    session_id=SESSION_ID,
+                )
+            ],
+            entities=[
+                PersistentEntity(
+                    id="ent_doctor",
+                    name="林医生",
+                    entity_type="person",
+                    identity_summary="用户此次复诊的医生",
+                    aliases=["林医生"],
+                    user_id=USER_ID,
+                    session_id=SESSION_ID,
+                )
+            ],
+            properties=[
+                PersistentProperty(
+                    id="prop_doctor_role",
+                    entity_id="ent_doctor",
+                    content="林医生是用户此次复诊的医生。",
+                    property_type="role",
+                    user_id=USER_ID,
+                    session_id=SESSION_ID,
+                )
+            ],
+            links=[
+                PersistentLink(
+                    id="link_visit_doctor",
+                    from_ref=PersistentObjectRef("event", "evt_visit"),
+                    to_ref=PersistentObjectRef("entity", "ent_doctor"),
+                    relation_type="involves",
+                )
+            ],
+            time_refs=[
+                PersistentTimeRef(
+                    id="time_visit",
+                    raw_text="明天上午十点",
+                    time_kind="relative",
+                    timeline_kind="real_world",
+                    certainty="inferred",
+                    anchor_timezone="Asia/Shanghai",
+                    anchor_utc_offset="+08:00",
+                    anchor_message_id="msg_visit",
+                    resolved_start="2026-05-16T10:00:00+08:00",
+                    granularity="minute",
+                )
+            ],
+            time_links=[
+                PersistentTimeLink(
+                    id="tlink_visit_time",
+                    target_ref=PersistentObjectRef("event", "evt_visit"),
+                    time_ref_id="time_visit",
+                    time_role="scheduled_for",
+                )
+            ],
+        )
+
+    def save_bundle(self, bundle: PersistentMemoryBundle) -> PersistentMemoryBundle:
+        return bundle
+
+    def get_event(self, event_id: str) -> PersistentEvent | None:
+        return _first(item for item in self.bundle.events if item.id == event_id)
+
+    def get_description(self, description_id: str) -> PersistentDescription | None:
+        return _first(
+            item for item in self.bundle.descriptions if item.id == description_id
+        )
+
+    def get_entity(self, entity_id: str) -> PersistentEntity | None:
+        return _first(item for item in self.bundle.entities if item.id == entity_id)
+
+    def get_property(self, property_id: str) -> PersistentProperty | None:
+        return _first(item for item in self.bundle.properties if item.id == property_id)
+
+    def get_link(self, link_id: str) -> PersistentLink | None:
+        return _first(item for item in self.bundle.links if item.id == link_id)
+
+    def get_time_ref(self, time_ref_id: str) -> PersistentTimeRef | None:
+        return _first(item for item in self.bundle.time_refs if item.id == time_ref_id)
+
+    def get_time_link(self, time_link_id: str) -> PersistentTimeLink | None:
+        return _first(
+            item for item in self.bundle.time_links if item.id == time_link_id
+        )
+
+    def list_events(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentEvent]:
+        return self.bundle.events[:limit]
+
+    def list_entities(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentEntity]:
+        return self.bundle.entities[:limit]
+
+    def list_descriptions(
+        self,
+        event_ids: list[str] | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentDescription]:
+        ids = set(event_ids or [])
+        items = [
+            item for item in self.bundle.descriptions
+            if not ids or item.event_id in ids
+        ]
+        return items[:limit]
+
+    def list_properties(
+        self,
+        entity_ids: list[str] | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentProperty]:
+        ids = set(entity_ids or [])
+        items = [
+            item for item in self.bundle.properties
+            if not ids or item.entity_id in ids
+        ]
+        return items[:limit]
+
+    def list_links(
+        self,
+        object_refs: list[PersistentObjectRef] | None = None,
+        user_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentLink]:
+        ref_keys = {
+            (ref.object_type, ref.object_id) for ref in object_refs or []
+        }
+        items = [
+            item for item in self.bundle.links
+            if not ref_keys
+            or (item.from_ref.object_type, item.from_ref.object_id) in ref_keys
+            or (item.to_ref.object_type, item.to_ref.object_id) in ref_keys
+        ]
+        return items[:limit]
+
+    def list_time_links(
+        self,
+        target_refs: list[PersistentObjectRef] | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentTimeLink]:
+        ref_keys = {
+            (ref.object_type, ref.object_id) for ref in target_refs or []
+        }
+        items = [
+            item for item in self.bundle.time_links
+            if not ref_keys
+            or (item.target_ref.object_type, item.target_ref.object_id) in ref_keys
+        ]
+        return items[:limit]
+
+    def get_time_refs(self, time_ref_ids: list[str]) -> list[PersistentTimeRef]:
+        ids = set(time_ref_ids)
+        return [item for item in self.bundle.time_refs if item.id in ids]
+
+
+def _first(items):
+    return next(iter(items), None)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 
 from conversation.config import StorageConfig
-from memory.models import MemoryRecord, MemorySourceRef
+from memory.models import MemoryRecord, MemoryRetrievalRequest, MemorySourceRef
 from memory.persistence.models import (
     PersistentDescription,
     PersistentEntity,
@@ -20,6 +20,7 @@ from memory.persistence.models import (
 )
 from memory.persistence import MemoryWriteResultPersistenceSync
 from memory.persistence.postgres import PostgresPersistentMemoryRepository
+from memory.retrieval import NormalizedMemoryRetriever
 from memory.writing import MemoryWriteResult
 
 USER_ID = "usr_persistence_test"
@@ -51,6 +52,7 @@ def main() -> int:
     tests = [
         test_save_and_load_bundle,
         test_sync_write_result_to_persistent_bundle,
+        test_normalized_retriever_reads_postgres_views,
     ]
     for test in tests:
         _cleanup(repository)
@@ -309,6 +311,31 @@ def test_sync_write_result_to_persistent_bundle(
     assert repository.get_link(LINK_ID) is not None
     assert repository.get_time_ref(TIME_REF_ID) is not None
     assert repository.get_time_link(TIME_LINK_ID) is not None
+
+
+def test_normalized_retriever_reads_postgres_views(
+    repository: PostgresPersistentMemoryRepository,
+) -> None:
+    test_sync_write_result_to_persistent_bundle(repository)
+
+    result = NormalizedMemoryRetriever(repository).retrieve(
+        MemoryRetrievalRequest(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            query="林医生",
+            limit=4,
+        )
+    )
+    assert result.memory_context
+    content = result.memory_context[0].content
+
+    assert "Event: 复诊安排" in content
+    assert "Details: 用户计划明天上午十点和林医生复诊，地点在静安门诊。" in content
+    assert "Time: scheduled_for 明天上午十点" in content
+    assert "Entities: 林医生" in content
+    assert LINK_ID not in content
+    assert TIME_LINK_ID not in content
+    assert any(record.id == EVENT_ID for record in result.records)
 
 
 def _cleanup(repository: PostgresPersistentMemoryRepository) -> None:

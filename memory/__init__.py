@@ -56,6 +56,9 @@ from .retrieval import (
     CandidateMemoryRetriever,
     CandidateRelatedGroup,
     CandidateRetrievalResult,
+    NormalizedEntityMemoryView,
+    NormalizedEventMemoryView,
+    NormalizedMemoryRetriever,
     RelatedMemory,
 )
 from .reconciliation import (
@@ -120,6 +123,9 @@ __all__ = [
     "LLMMemoryExtractionClient",
     "LLMMemoryExtractor",
     "NoopMemorySystem",
+    "NormalizedEntityMemoryView",
+    "NormalizedEventMemoryView",
+    "NormalizedMemoryRetriever",
     "PersistentDescription",
     "PersistentEntity",
     "PersistentEvent",
