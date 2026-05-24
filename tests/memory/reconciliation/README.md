@@ -3,7 +3,7 @@
 Run deterministic tests for the baseline reconciler:
 
 ```bash
-.venv/bin/python -m memory_reconciliation_tests.runner
+.venv/bin/python -m tests.memory.reconciliation.runner
 ```
 
 These tests do not call an LLM. They verify that candidate retrieval groups are

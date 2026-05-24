@@ -125,7 +125,7 @@ def main() -> int:
 
 def _default_report_path() -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return Path("memory_extractor_tests") / "reports" / f"{timestamp}.md"
+    return Path("tests") / "memory" / "extractor_real" / "reports" / f"{timestamp}.md"
 
 
 def _token_usage_from_raw(raw_usage: dict[str, object]) -> TokenUsage:

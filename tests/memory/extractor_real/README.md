@@ -5,13 +5,13 @@
 运行：
 
 ```bash
-.venv/bin/python -m memory_extractor_tests.runner --env-file .env
+.venv/bin/python -m tests.memory.extractor_real.runner --env-file .env
 ```
 
 默认会读取 `.env` 中的 LLM 配置，调用真实模型，并生成不覆盖旧报告的时间戳文件：
 
 ```text
-memory_extractor_tests/reports/YYYYMMDDTHHMMSSZ.md
+tests/memory/extractor_real/reports/YYYYMMDDTHHMMSSZ.md
 ```
 
 如需指定固定路径，可以传入 `--report-path`。

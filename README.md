@@ -62,6 +62,36 @@ docker run -d --name kokoro-postgres \
   --replace
 ```
 
+## 测试
+
+测试代码统一放在 `tests/` 下。memory 子系统按能力拆分在 `tests/memory/`：
+
+- `retrieval/`
+- `reconciliation/`
+- `writing/`
+- `system/`
+- `persistence/`
+- `extractor_real/`
+- `system_real/`
+
+运行快速 deterministic suite：
+
+```bash
+.venv/bin/python -m tests.memory.run_all
+```
+
+包含 PostgreSQL persistence 测试：
+
+```bash
+.venv/bin/python -m tests.memory.run_all --postgres
+```
+
+包含真实 LLM 测试：
+
+```bash
+.venv/bin/python -m tests.memory.run_all --real-llm --env-file .env
+```
+
 ## 使用
 
 安装依赖：

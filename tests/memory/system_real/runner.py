@@ -158,7 +158,7 @@ def _selected_scenarios(
 
 def _default_report_path() -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return Path("memory_system_real_tests") / "reports" / f"{timestamp}.md"
+    return Path("tests") / "memory" / "system_real" / "reports" / f"{timestamp}.md"
 
 
 if __name__ == "__main__":

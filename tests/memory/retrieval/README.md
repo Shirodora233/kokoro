@@ -3,7 +3,7 @@
 Run local deterministic tests for candidate-aware retrieval:
 
 ```bash
-.venv/bin/python -m memory_retrieval_tests.runner
+.venv/bin/python -m tests.memory.retrieval.runner
 ```
 
 These tests do not call an LLM. They cover candidate matching, direct/expanded

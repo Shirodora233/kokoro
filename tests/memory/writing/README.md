@@ -3,7 +3,7 @@
 Run deterministic tests for applying memory write plans:
 
 ```bash
-.venv/bin/python -m memory_writing_tests.runner
+.venv/bin/python -m tests.memory.writing.runner
 ```
 
 These tests do not call an LLM. They verify that write plans are applied to the

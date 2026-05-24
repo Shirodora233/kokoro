@@ -10,11 +10,11 @@ in-memory memory runtime:
 - active-memory refresh
 - prompt-context retrieval
 
-They are intentionally separate from deterministic `memory_system_tests/`.
+They are intentionally separate from deterministic `tests/memory/system/`.
 Run them with:
 
 ```bash
-.venv/bin/python -m memory_system_real_tests.runner
+.venv/bin/python -m tests.memory.system_real.runner
 ```
 
 Use `--strict` when CI-like failure behavior is needed.
