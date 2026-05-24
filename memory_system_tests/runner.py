@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from memory.models import MemoryRetrievalRequest
 from memory.system import InMemoryMemorySystem
+from memory.writing import MemoryWriteResult
 
 from .fixtures import (
     SESSION_ID,
@@ -24,6 +26,7 @@ def main() -> int:
         test_process_turn_reuses_entity_and_attaches_property,
         test_empty_extraction_keeps_system_operational,
         test_retrieve_context_uses_active_and_stored_records,
+        test_process_turn_invokes_persistence_sync,
     ]
     for test in tests:
         test()
@@ -134,6 +137,40 @@ def test_retrieve_context_uses_active_and_stored_records() -> None:
     assert result.records[0].text == "静安门诊"
     assert result.memory_context
     assert "静安门诊" in result.memory_context[0].content
+
+
+def test_process_turn_invokes_persistence_sync() -> None:
+    persistence_sync = _CapturingPersistenceSync()
+    system = InMemoryMemorySystem(
+        extractor=SequenceMemoryExtractor(
+            [[candidate("entity", "林医生", "cand_doctor")]]
+        ),
+        persistence_sync=persistence_sync,  # type: ignore[arg-type]
+    )
+
+    result = system.process_turn(make_turn("msg_sync", "我明天要和林医生复诊。"))
+
+    assert len(persistence_sync.calls) == 1
+    assert len(persistence_sync.calls[0].created_records) == 1
+    assert persistence_sync.calls[0].created_records[0].text == "林医生"
+    assert result.metadata["persistent_write"]["captured_created_count"] == 1
+
+
+@dataclass
+class _CapturedSyncResult:
+    created_count: int
+
+    def to_record(self) -> dict[str, int]:
+        return {"captured_created_count": self.created_count}
+
+
+class _CapturingPersistenceSync:
+    def __init__(self) -> None:
+        self.calls: list[MemoryWriteResult] = []
+
+    def sync(self, write_result: MemoryWriteResult) -> _CapturedSyncResult:
+        self.calls.append(write_result)
+        return _CapturedSyncResult(len(write_result.created_records))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from conversation.config import StorageConfig
+from memory.models import MemoryRecord, MemorySourceRef
 from memory.persistence.models import (
     PersistentDescription,
     PersistentEntity,
@@ -17,7 +18,9 @@ from memory.persistence.models import (
     PersistentTimeLink,
     PersistentTimeRef,
 )
+from memory.persistence import MemoryWriteResultPersistenceSync
 from memory.persistence.postgres import PostgresPersistentMemoryRepository
+from memory.writing import MemoryWriteResult
 
 USER_ID = "usr_persistence_test"
 SESSION_ID = "ses_persistence_test"
@@ -45,13 +48,18 @@ ALL_IDS = [
 def main() -> int:
     config = StorageConfig.from_env(".env")
     repository = PostgresPersistentMemoryRepository(config.database_url)
-    _cleanup(repository)
-    try:
-        test_save_and_load_bundle(repository)
-    finally:
+    tests = [
+        test_save_and_load_bundle,
+        test_sync_write_result_to_persistent_bundle,
+    ]
+    for test in tests:
         _cleanup(repository)
-    print("PASS test_save_and_load_bundle")
-    print("passed=1/1")
+        try:
+            test(repository)
+        finally:
+            _cleanup(repository)
+        print(f"PASS {test.__name__}")
+    print(f"passed={len(tests)}/{len(tests)}")
     return 0
 
 
@@ -180,6 +188,127 @@ def test_save_and_load_bundle(
     assert time_link is not None and time_link.target_ref.object_id == EVENT_ID
     assert any(item.id == EVENT_ID for item in listed_events)
     assert any(item.id == ENTITY_ID for item in listed_entities)
+
+
+def test_sync_write_result_to_persistent_bundle(
+    repository: PostgresPersistentMemoryRepository,
+) -> None:
+    sync = MemoryWriteResultPersistenceSync(repository)
+    source = MemorySourceRef(
+        source_type="message",
+        source_id=MESSAGE_ID,
+        quote="明天上午十点我要和林医生复诊，地点在静安门诊。",
+    )
+    result = sync.sync(
+        MemoryWriteResult(
+            created_records=[
+                MemoryRecord(
+                    id=EVENT_ID,
+                    memory_type="event",
+                    text="复诊安排",
+                    source_refs=[source],
+                    metadata={
+                        "summary": "用户计划和林医生复诊",
+                        "event_type": "appointment",
+                        "user_id": USER_ID,
+                        "session_id": SESSION_ID,
+                    },
+                ),
+                MemoryRecord(
+                    id=ENTITY_ID,
+                    memory_type="entity",
+                    text="林医生",
+                    source_refs=[source],
+                    metadata={
+                        "entity_type": "person",
+                        "identity_summary": "用户复诊安排中的医生",
+                        "aliases": ["林医生"],
+                        "user_id": USER_ID,
+                        "session_id": SESSION_ID,
+                    },
+                ),
+                MemoryRecord(
+                    id=TIME_REF_ID,
+                    memory_type="time_ref",
+                    text="明天上午十点",
+                    source_refs=[source],
+                    metadata={
+                        "raw_text": "明天上午十点",
+                        "time_kind": "relative",
+                        "timeline_kind": "real_world",
+                        "certainty": "inferred",
+                        "anchor_timezone": "Asia/Shanghai",
+                        "anchor_utc_offset": "+08:00",
+                        "anchor_message_id": MESSAGE_ID,
+                        "resolved_start": "2026-05-16T10:00:00+08:00",
+                        "granularity": "minute",
+                    },
+                ),
+            ],
+            attached_records=[
+                MemoryRecord(
+                    id=DESCRIPTION_ID,
+                    memory_type="description",
+                    text="用户计划明天上午十点和林医生复诊，地点在静安门诊。",
+                    source_refs=[source],
+                    metadata={
+                        "attached_to_record_id": EVENT_ID,
+                        "description_type": "appointment_detail",
+                        "user_id": USER_ID,
+                        "session_id": SESSION_ID,
+                    },
+                ),
+                MemoryRecord(
+                    id=PROPERTY_ID,
+                    memory_type="property",
+                    text="林医生是用户此次复诊的医生。",
+                    source_refs=[source],
+                    metadata={
+                        "attached_to_record_id": ENTITY_ID,
+                        "property_type": "role",
+                        "user_id": USER_ID,
+                        "session_id": SESSION_ID,
+                    },
+                ),
+                MemoryRecord(
+                    id=LINK_ID,
+                    memory_type="link",
+                    text="event involves entity",
+                    source_refs=[source],
+                    metadata={
+                        "from_type": "event",
+                        "from_record_id": EVENT_ID,
+                        "to_type": "entity",
+                        "to_record_id": ENTITY_ID,
+                        "relation_type": "involves",
+                        "user_id": USER_ID,
+                    },
+                ),
+                MemoryRecord(
+                    id=TIME_LINK_ID,
+                    memory_type="time_link",
+                    text="event scheduled_for time_ref",
+                    source_refs=[source],
+                    metadata={
+                        "target_type": "event",
+                        "target_record_id": EVENT_ID,
+                        "time_ref_record_id": TIME_REF_ID,
+                        "time_role": "scheduled_for",
+                    },
+                ),
+            ],
+        )
+    )
+
+    assert result.metadata["stored_count"] == 7
+    assert result.build_result.skipped_records == []
+    assert repository.get_event(EVENT_ID) is not None
+    assert repository.get_description(DESCRIPTION_ID) is not None
+    assert repository.get_entity(ENTITY_ID) is not None
+    assert repository.get_property(PROPERTY_ID) is not None
+    assert repository.get_link(LINK_ID) is not None
+    assert repository.get_time_ref(TIME_REF_ID) is not None
+    assert repository.get_time_link(TIME_LINK_ID) is not None
 
 
 def _cleanup(repository: PostgresPersistentMemoryRepository) -> None:

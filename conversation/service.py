@@ -21,6 +21,7 @@ from memory import (
     MemorySystem,
     MemoryTurnInput,
     MemoryTurnResult,
+    MemoryWriteResultPersistenceSync,
     InMemoryMemorySystem,
 )
 
@@ -60,19 +61,28 @@ class ConversationService:
         runtime_config = ConversationRuntimeConfig.from_env(env_file)
         memory_config = MemoryRuntimeConfig.from_env(env_file)
         memory_store: MemoryStore | None = None
+        persistence_sync: MemoryWriteResultPersistenceSync | None = None
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
+            from memory.persistence.postgres import PostgresPersistentMemoryRepository
             from memory.storage.postgres import PostgresMemoryStore
 
             store = PostgresConversationStore(storage_config.database_url or "")
             memory_store = PostgresMemoryStore(storage_config.database_url or "")
+            persistence_sync = MemoryWriteResultPersistenceSync(
+                PostgresPersistentMemoryRepository(storage_config.database_url or "")
+            )
         else:
             store = JsonConversationStore(data_dir or default_data_dir())
         chat_client = OpenAIChatClient(config)
-        memory_system = InMemoryMemorySystem(store=memory_store)
+        memory_system = InMemoryMemorySystem(
+            store=memory_store,
+            persistence_sync=persistence_sync,
+        )
         if memory_config.extraction_enabled:
             memory_system = InMemoryMemorySystem(
                 store=memory_store,
+                persistence_sync=persistence_sync,
                 extractor=LLMMemoryExtractor(
                     chat_client=chat_client,
                     model=memory_config.extraction_model or config.model,

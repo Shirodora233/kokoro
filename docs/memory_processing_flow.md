@@ -142,9 +142,9 @@ write plan 应用到当前 `MemoryStore`。本地开发可以使用 `InMemoryMem
 
 范式化持久层已经作为独立 repository 起步：`memory/persistence/postgres/` 会创建
 `memory_events`、`memory_descriptions`、`memory_entities`、`memory_properties`、
-`memory_links`、`memory_time_refs`、`memory_time_links` 和 `memory_sources`。这层当前还没有接入
-conversation turn runtime；下一步需要把 `MemoryWritePlan` 或候选 `MemoryRecord` 映射成
-`PersistentMemoryBundle`，再写入这个 repository。
+`memory_links`、`memory_time_refs`、`memory_time_links` 和 `memory_sources`。当 conversation 使用
+PostgreSQL 后端时，runtime 会通过 `MemoryWriteResultPersistenceSync` 把本轮 write result 中的
+`MemoryRecord` 映射成 `PersistentMemoryBundle`，再写入范式化 repository。
 
 Extractor contract 当前采用聚合候选输出：
 
@@ -198,17 +198,18 @@ conversation 收到动作后可以选择：
 6. memory 抽取聚合候选事实，并拆分成当前 runtime 可处理的 `MemoryRecord`。
 7. memory 用候选记忆检索相关旧记忆，得到 direct/expanded 相关记录。
 8. memory reconciler 根据候选和相关旧记忆生成 `MemoryWritePlan`。
-9. memory writer 把 write plan 应用到当前 store。
-10. memory 用新建、挂载和复用的记忆刷新 `ActiveMemoryContext`。
-11. memory 返回 `memory_context` 和 `context_actions`。
-12. conversation 执行允许的 `context_actions`。
-13. 如果刚执行了摘要压缩，conversation 将新摘要放在原始 conversation context 开头。
-14. conversation 构造 LLM prompt：system prompt、压缩摘要、conversation context、memory context。
-15. conversation 调用 LLM。
-16. conversation 保存 assistant message。
-17. conversation 可选择再次调用 memory，让 assistant message 也进入记忆处理。
+9. memory writer 把 write plan 应用到当前 `MemoryStore`。
+10. 如果配置了 persistence sync，memory 把 write result 同步写入范式化持久层。
+11. memory 用新建、挂载和复用的记忆刷新 `ActiveMemoryContext`。
+12. memory 返回 `memory_context` 和 `context_actions`。
+13. conversation 执行允许的 `context_actions`。
+14. 如果刚执行了摘要压缩，conversation 将新摘要放在原始 conversation context 开头。
+15. conversation 构造 LLM prompt：system prompt、压缩摘要、conversation context、memory context。
+16. conversation 调用 LLM。
+17. conversation 保存 assistant message。
+18. conversation 可选择再次调用 memory，让 assistant message 也进入记忆处理。
 
-第 17 步不是强制的。第一阶段可以只处理用户消息。
+第 18 步不是强制的。第一阶段可以只处理用户消息。
 
 ## 8. 失败策略
 
@@ -245,6 +246,8 @@ memory 失败不应该阻断基础对话能力。
 - `memory/extraction/validation.py`：聚合候选校验，包括 event 必须有 description、时间字段契约等。
 - `memory/persistence/models.py`：范式化持久记忆 DTO。
 - `memory/persistence/interfaces.py`：范式化持久记忆 repository 协议。
+- `memory/persistence/runtime.py`：把 `MemoryWriteResult` 中的通用 `MemoryRecord` 映射成
+  `PersistentMemoryBundle`，并同步写入范式化 repository。
 - `memory/persistence/postgres/`：PostgreSQL 范式化持久记忆 repository 和 schema。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/simple.py`：基于 scope 和简单文本匹配的 store 检索与 prompt context 渲染。
@@ -263,6 +266,5 @@ memory 失败不应该阻断基础对话能力。
 后续实现可以继续拆分：
 
 - `memory/extraction/pipeline.py`：基于共享 `llm/` 的候选记忆抽取流程。
-- `memory/retrieval/vector.py` 或 `memory/retrieval/postgres.py`：语义检索或数据库检索。
-- `memory/persistence/postgres/`：接入 runtime writer，让真实 conversation turn 写入范式化表。
+- `memory/retrieval/postgres.py` 或 `memory/retrieval/vector.py`：从范式化表/embedding 中取回长期记忆。
 - `memory/context/policy.py`：真实上下文压缩策略。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Sequence
 
@@ -22,6 +23,7 @@ from .models import (
     MemoryTurnInput,
     MemoryTurnResult,
 )
+from .persistence import MemoryWriteResultPersistenceSync
 from .reconciliation import (
     DeterministicMemoryReconciler,
     MemoryReconciler,
@@ -35,6 +37,8 @@ from .writing import (
     MemoryWriteRequest,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 
 class InMemoryMemorySystem(MemorySystem):
     """Process-local memory runtime with replaceable components."""
@@ -47,6 +51,7 @@ class InMemoryMemorySystem(MemorySystem):
         candidate_retriever: CandidateMemoryRetriever | None = None,
         reconciler: MemoryReconciler | None = None,
         write_applier: MemoryWritePlanApplier | None = None,
+        persistence_sync: MemoryWriteResultPersistenceSync | None = None,
         active_cache: InMemoryActiveMemoryCache | None = None,
         context_policy: ContextPolicy | None = None,
     ) -> None:
@@ -62,6 +67,7 @@ class InMemoryMemorySystem(MemorySystem):
         self.write_applier = (
             write_applier or InMemoryMemoryWritePlanApplier(self.store)
         )
+        self.persistence_sync = persistence_sync
 
     def process_turn(self, turn: MemoryTurnInput) -> MemoryTurnResult:
         active_context = turn.active_memory_context or self.active_cache.get(
@@ -97,6 +103,7 @@ class InMemoryMemorySystem(MemorySystem):
                 metadata={"source": "process_turn"},
             )
         )
+        persistent_write_metadata = self._sync_persistent_memory(write_result)
         created_records = [
             *write_result.created_records,
             *write_result.attached_records,
@@ -138,6 +145,7 @@ class InMemoryMemorySystem(MemorySystem):
                 "candidate_retrieval": candidate_retrieval.to_record(),
                 "write_plan": write_plan.to_record(),
                 "write_result": write_result.to_record(),
+                "persistent_write": persistent_write_metadata,
             },
         )
 
@@ -179,3 +187,18 @@ class InMemoryMemorySystem(MemorySystem):
             metadata.setdefault("timezone", turn.timezone)
         metadata.setdefault("created_from_message_id", turn.new_message.id)
         return replace(record, metadata=metadata)
+
+    def _sync_persistent_memory(
+        self,
+        write_result: "MemoryWriteResult",
+    ) -> dict[str, object] | None:
+        if self.persistence_sync is None:
+            return None
+        try:
+            return self.persistence_sync.sync(write_result).to_record()
+        except Exception as error:
+            LOGGER.warning("Persistent memory sync failed: %s", error)
+            return {
+                "error": str(error),
+                "sync": self.persistence_sync.__class__.__name__,
+            }
