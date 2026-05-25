@@ -25,6 +25,12 @@ from ..persistence.models import (
     PersistentTimeLink,
     PersistentTimeRef,
 )
+from .lookup import (
+    NormalizedMemoryLookup,
+    NormalizedMemoryLookupHit,
+    NormalizedMemoryLookupRequest,
+    RepositoryNormalizedMemoryLookup,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,13 @@ class _SelectedView:
     lines: list[str]
 
 
+@dataclass(frozen=True)
+class _HydratedViews:
+    event_views: list[NormalizedEventMemoryView]
+    entity_views: list[NormalizedEntityMemoryView]
+    selected_view_refs: list[tuple[str, str]]
+
+
 class NormalizedMemoryRetriever:
     """Retrieve prompt-ready memory context from normalized persistence tables.
 
@@ -69,10 +82,15 @@ class NormalizedMemoryRetriever:
     def __init__(
         self,
         repository: PersistentMemoryRepository,
+        lookup: NormalizedMemoryLookup | None = None,
         default_limit: int = 8,
         pool_limit: int = 40,
     ) -> None:
         self.repository = repository
+        self.lookup = lookup or RepositoryNormalizedMemoryLookup(
+            repository,
+            pool_limit=pool_limit,
+        )
         self.default_limit = default_limit
         self.pool_limit = pool_limit
 
@@ -83,11 +101,20 @@ class NormalizedMemoryRetriever:
                 metadata={"retriever": "normalized", "record_count": 0}
             )
 
-        event_views, entity_views = self.假如数据库很大的话，会不会很多数据直接被_load_views过滤掉了进不来(request)
+        lookup_result = self.lookup.lookup(
+            NormalizedMemoryLookupRequest(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                query=request.query,
+                limit=max(limit * 4, limit),
+                metadata=dict(request.metadata),
+            )
+        )
+        hydrated = self._load_views(request, lookup_result.hits)
         selected = self._select_views(
-            event_views=event_views,
-            entity_views=entity_views,
-            query=request.query,
+            event_views=hydrated.event_views,
+            entity_views=hydrated.entity_views,
+            selected_view_refs=hydrated.selected_view_refs,
             limit=limit,
         )
         context_blocks = self._render_context(selected)
@@ -97,9 +124,10 @@ class NormalizedMemoryRetriever:
             metadata={
                 "retriever": "normalized",
                 "repository": self.repository.__class__.__name__,
+                "lookup": lookup_result.metadata,
                 "record_count": len(selected),
-                "event_view_count": len(event_views),
-                "entity_view_count": len(entity_views),
+                "event_view_count": len(hydrated.event_views),
+                "entity_view_count": len(hydrated.entity_views),
                 "query": request.query,
             },
         )
@@ -107,23 +135,54 @@ class NormalizedMemoryRetriever:
     def _load_views(
         self,
         request: MemoryRetrievalRequest,
-    ) -> tuple[list[NormalizedEventMemoryView], list[NormalizedEntityMemoryView]]:
+        hits: Sequence[NormalizedMemoryLookupHit],
+    ) -> _HydratedViews:
         pool_limit = max(self.pool_limit, (request.limit or self.default_limit) * 4)
-        events = self.repository.list_events(
-            user_id=request.user_id,
-            session_id=request.session_id,
-            limit=pool_limit,
-        )
-        entities = self.repository.list_entities(
-            user_id=request.user_id,
-            session_id=request.session_id,
-            limit=pool_limit,
-        )
+        selected_view_refs: list[tuple[str, str]] = []
+        seed_descriptions: list[PersistentDescription] = []
+        seed_properties: list[PersistentProperty] = []
+        events_by_id: dict[str | None, PersistentEvent] = {}
+        entities_by_id: dict[str | None, PersistentEntity] = {}
 
-        event_ids = _ids(event.id for event in events)
-        entity_ids = _ids(entity.id for entity in entities)
+        for hit in hits:
+            ref = hit.object_ref
+            if ref.object_type == "event":
+                event = self.repository.get_event(ref.object_id)
+                if event:
+                    events_by_id[event.id] = event
+                    _append_view_ref(selected_view_refs, "event", event.id)
+            elif ref.object_type == "description":
+                description = self.repository.get_description(ref.object_id)
+                if not description:
+                    continue
+                seed_descriptions.append(description)
+                if description.event_id:
+                    event = self.repository.get_event(description.event_id)
+                    if event:
+                        events_by_id[event.id] = event
+                        _append_view_ref(selected_view_refs, "event", event.id)
+            elif ref.object_type == "entity":
+                entity = self.repository.get_entity(ref.object_id)
+                if entity:
+                    entities_by_id[entity.id] = entity
+                    _append_view_ref(selected_view_refs, "entity", entity.id)
+            elif ref.object_type == "property":
+                memory_property = self.repository.get_property(ref.object_id)
+                if not memory_property:
+                    continue
+                seed_properties.append(memory_property)
+                if memory_property.entity_id:
+                    entity = self.repository.get_entity(memory_property.entity_id)
+                    if entity:
+                        entities_by_id[entity.id] = entity
+                        _append_view_ref(selected_view_refs, "entity", entity.id)
+
+        event_ids = _ids(events_by_id.keys())
+        entity_ids = _ids(entities_by_id.keys())
         descriptions = self.repository.list_descriptions(event_ids=event_ids)
         properties = self.repository.list_properties(entity_ids=entity_ids)
+        descriptions = _merge_descriptions(seed_descriptions, descriptions)
+        properties = _merge_properties(seed_properties, properties)
 
         event_refs = [PersistentObjectRef("event", event_id) for event_id in event_ids]
         entity_refs = [
@@ -135,8 +194,6 @@ class NormalizedMemoryRetriever:
             limit=pool_limit * 4,
         )
 
-        entities_by_id = {entity.id: entity for entity in entities if entity.id}
-        events_by_id = {event.id: event for event in events if event.id}
         self._hydrate_linked_entities(links, entities_by_id)
         self._hydrate_linked_events(links, events_by_id)
 
@@ -189,7 +246,11 @@ class NormalizedMemoryRetriever:
             )
             for entity in entities_by_id.values()
         ]
-        return event_views, entity_views
+        return _HydratedViews(
+            event_views=event_views,
+            entity_views=entity_views,
+            selected_view_refs=selected_view_refs,
+        )
 
     def _hydrate_linked_entities(
         self,
@@ -279,18 +340,34 @@ class NormalizedMemoryRetriever:
         self,
         event_views: Sequence[NormalizedEventMemoryView],
         entity_views: Sequence[NormalizedEntityMemoryView],
-        query: str | None,
+        selected_view_refs: Sequence[tuple[str, str]],
         limit: int,
     ) -> list[_SelectedView]:
         selected: list[_SelectedView] = []
-        for view in event_views:
-            rendered = self._render_event_view(view)
-            if self._matches_query(rendered.text, query):
-                selected.append(rendered)
-        for view in entity_views:
-            rendered = self._render_entity_view(view)
-            if self._matches_query(rendered.text, query):
-                selected.append(rendered)
+        seen: set[tuple[str, str]] = set()
+        event_views_by_id = {
+            view.event.id: view for view in event_views if view.event.id
+        }
+        entity_views_by_id = {
+            view.entity.id: view for view in entity_views if view.entity.id
+        }
+
+        for view_ref in selected_view_refs:
+            if view_ref in seen:
+                continue
+            kind, object_id = view_ref
+            if kind == "event" and object_id in event_views_by_id:
+                selected.append(self._render_event_view(event_views_by_id[object_id]))
+                seen.add(view_ref)
+            elif kind == "entity" and object_id in entity_views_by_id:
+                selected.append(self._render_entity_view(entity_views_by_id[object_id]))
+                seen.add(view_ref)
+
+        if not selected_view_refs:
+            for view in event_views:
+                selected.append(self._render_event_view(view))
+            for view in entity_views:
+                selected.append(self._render_entity_view(view))
         return selected[:limit]
 
     def _render_event_view(self, view: NormalizedEventMemoryView) -> _SelectedView:
@@ -378,12 +455,6 @@ class NormalizedMemoryRetriever:
             ),
             lines=lines,
         )
-
-    def _matches_query(self, text: str, query: str | None) -> bool:
-        normalized_query = (query or "").casefold().strip()
-        if not normalized_query:
-            return True
-        return normalized_query in text.casefold()
 
     def _render_context(
         self,
@@ -504,6 +575,45 @@ def _time_text(time_ref: PersistentTimeRef) -> str:
         or time_ref.recurrence_text
         or ""
     )
+
+
+def _append_view_ref(
+    refs: list[tuple[str, str]],
+    kind: str,
+    object_id: str | None,
+) -> None:
+    if object_id:
+        refs.append((kind, object_id))
+
+
+def _merge_descriptions(
+    first: Sequence[PersistentDescription],
+    second: Sequence[PersistentDescription],
+) -> list[PersistentDescription]:
+    merged: list[PersistentDescription] = []
+    seen: set[str] = set()
+    for description in [*first, *second]:
+        key = description.id or description.content
+        if key in seen:
+            continue
+        merged.append(description)
+        seen.add(key)
+    return merged
+
+
+def _merge_properties(
+    first: Sequence[PersistentProperty],
+    second: Sequence[PersistentProperty],
+) -> list[PersistentProperty]:
+    merged: list[PersistentProperty] = []
+    seen: set[str] = set()
+    for memory_property in [*first, *second]:
+        key = memory_property.id or memory_property.content
+        if key in seen:
+            continue
+        merged.append(memory_property)
+        seen.add(key)
+    return merged
 
 
 def _source_refs(

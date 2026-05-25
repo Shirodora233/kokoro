@@ -27,6 +27,9 @@ from memory.retrieval import (
     CandidateMemoryRetriever,
     CandidateRelatedGroup,
     CandidateRetrievalResult,
+    NormalizedMemoryLookupHit,
+    NormalizedMemoryLookupRequest,
+    NormalizedMemoryLookupResult,
     NormalizedMemoryRetriever,
     RelatedMemory,
 )
@@ -50,6 +53,7 @@ def main() -> int:
         test_unrelated_candidate_returns_empty,
         test_normalized_retrieval_renders_event_view_without_raw_links,
         test_normalized_retrieval_query_matches_entity_property,
+        test_normalized_lookup_hydrates_description_hit_without_recent_pool,
     ]
     for test in tests:
         test()
@@ -408,6 +412,35 @@ def test_normalized_retrieval_query_matches_entity_property() -> None:
     assert "link_visit_doctor" not in content
 
 
+def test_normalized_lookup_hydrates_description_hit_without_recent_pool() -> None:
+    result = NormalizedMemoryRetriever(
+        _NoRecentNormalizedFixtureRepository(),
+        lookup=_StaticNormalizedLookup(
+            [
+                NormalizedMemoryLookupHit(
+                    object_ref=PersistentObjectRef("description", "desc_visit"),
+                    score=0.9,
+                    reason="description_text_match",
+                    matched_text="静安门诊",
+                )
+            ]
+        ),
+    ).retrieve(
+        MemoryRetrievalRequest(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            query="静安门诊",
+            limit=4,
+        )
+    )
+    assert result.memory_context
+    content = result.memory_context[0].content
+
+    assert "Event: 复诊安排" in content
+    assert "Details: 用户计划明天上午十点和林医生复诊，地点在静安门诊。" in content
+    assert result.metadata["lookup"]["lookup"] == "static"
+
+
 def _record(
     record_id: str,
     memory_type: MemoryRecordType,
@@ -720,6 +753,41 @@ class _NormalizedFixtureRepository:
     def get_time_refs(self, time_ref_ids: list[str]) -> list[PersistentTimeRef]:
         ids = set(time_ref_ids)
         return [item for item in self.bundle.time_refs if item.id in ids]
+
+
+class _NoRecentNormalizedFixtureRepository(_NormalizedFixtureRepository):
+    def list_events(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentEvent]:
+        return []
+
+    def list_entities(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[PersistentEntity]:
+        return []
+
+
+class _StaticNormalizedLookup:
+    def __init__(self, hits: list[NormalizedMemoryLookupHit]) -> None:
+        self.hits = hits
+
+    def lookup(
+        self,
+        request: NormalizedMemoryLookupRequest,
+    ) -> NormalizedMemoryLookupResult:
+        return NormalizedMemoryLookupResult(
+            hits=self.hits[: request.limit],
+            metadata={
+                "lookup": "static",
+                "hit_count": min(len(self.hits), request.limit),
+            },
+        )
 
 
 def _first(items):

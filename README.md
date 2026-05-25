@@ -218,8 +218,9 @@ LLM provider 抽象位于 `llm/`，包括 `ChatClient`、`ChatMessageParam`、`L
 
 - 默认通过 `LLMMemoryExtractor` 从新消息和近期上下文中抽取候选记忆。
 - PostgreSQL 后端会同时写入 generic `memory_records` 和范式化 memory tables。
-- prompt retrieval 在 PostgreSQL 后端使用 normalized retriever，从 event/entity/property/time
-  关系中组装干净上下文，不把 raw `link` / `time_link` 直接塞进 prompt。
+- prompt retrieval 在 PostgreSQL 后端使用 `PostgresNormalizedMemoryLookup` 先在数据库层
+  筛选 event/description/entity/property 候选，再由 normalized retriever hydrate 成干净上下文；
+  raw `link` / `time_link` 只用于组装关系，不直接塞进 prompt。
 - candidate retrieval 仍使用 generic `MemoryStore` 给 reconciler 查重、reuse 和 attach。
 - 可通过传入 `NoopMemorySystem` 临时关闭记忆链路。
 

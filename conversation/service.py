@@ -67,7 +67,10 @@ class ConversationService:
         persistence_sync: MemoryWriteResultPersistenceSync | None = None
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
-            from memory.persistence.postgres import PostgresPersistentMemoryRepository
+            from memory.persistence.postgres import (
+                PostgresNormalizedMemoryLookup,
+                PostgresPersistentMemoryRepository,
+            )
             from memory.storage.postgres import PostgresMemoryStore
 
             store = PostgresConversationStore(storage_config.database_url or "")
@@ -78,7 +81,10 @@ class ConversationService:
             persistence_sync = MemoryWriteResultPersistenceSync(
                 persistent_repository
             )
-            memory_retriever = NormalizedMemoryRetriever(persistent_repository)
+            memory_retriever = NormalizedMemoryRetriever(
+                persistent_repository,
+                lookup=PostgresNormalizedMemoryLookup(persistent_repository),
+            )
         else:
             store = JsonConversationStore(data_dir or default_data_dir())
         chat_client = OpenAIChatClient(config)

@@ -11,6 +11,13 @@ from .normalized import (
     NormalizedEventMemoryView,
     NormalizedMemoryRetriever,
 )
+from .lookup import (
+    NormalizedMemoryLookup,
+    NormalizedMemoryLookupHit,
+    NormalizedMemoryLookupRequest,
+    NormalizedMemoryLookupResult,
+    RepositoryNormalizedMemoryLookup,
+)
 from .simple import InMemoryMemoryRetriever, SimpleMemoryContextRenderer
 
 __all__ = [
@@ -19,8 +26,13 @@ __all__ = [
     "CandidateRetrievalResult",
     "InMemoryMemoryRetriever",
     "NormalizedEntityMemoryView",
+    "NormalizedMemoryLookup",
+    "NormalizedMemoryLookupHit",
+    "NormalizedMemoryLookupRequest",
+    "NormalizedMemoryLookupResult",
     "NormalizedEventMemoryView",
     "NormalizedMemoryRetriever",
     "RelatedMemory",
+    "RepositoryNormalizedMemoryLookup",
     "SimpleMemoryContextRenderer",
 ]

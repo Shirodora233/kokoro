@@ -19,7 +19,10 @@ from memory.persistence.models import (
     PersistentTimeRef,
 )
 from memory.persistence import MemoryWriteResultPersistenceSync
-from memory.persistence.postgres import PostgresPersistentMemoryRepository
+from memory.persistence.postgres import (
+    PostgresNormalizedMemoryLookup,
+    PostgresPersistentMemoryRepository,
+)
 from memory.retrieval import NormalizedMemoryRetriever
 from memory.writing import MemoryWriteResult
 
@@ -318,11 +321,15 @@ def test_normalized_retriever_reads_postgres_views(
 ) -> None:
     test_sync_write_result_to_persistent_bundle(repository)
 
-    result = NormalizedMemoryRetriever(repository).retrieve(
+    retriever = NormalizedMemoryRetriever(
+        repository,
+        lookup=PostgresNormalizedMemoryLookup(repository),
+    )
+    result = retriever.retrieve(
         MemoryRetrievalRequest(
             user_id=USER_ID,
             session_id=SESSION_ID,
-            query="林医生",
+            query="静安门诊",
             limit=4,
         )
     )
@@ -335,7 +342,20 @@ def test_normalized_retriever_reads_postgres_views(
     assert "Entities: 林医生" in content
     assert LINK_ID not in content
     assert TIME_LINK_ID not in content
+    assert result.metadata["lookup"]["strategy"] == "lexical"
     assert any(record.id == EVENT_ID for record in result.records)
+
+    entity_result = retriever.retrieve(
+        MemoryRetrievalRequest(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            query="此次复诊的医生",
+            limit=4,
+        )
+    )
+    entity_content = entity_result.memory_context[0].content
+    assert "Entity: 林医生 (person)" in entity_content
+    assert "Properties: 林医生是用户此次复诊的医生。" in entity_content
 
 
 def _cleanup(repository: PostgresPersistentMemoryRepository) -> None:
