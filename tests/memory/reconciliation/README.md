@@ -6,5 +6,5 @@ Run deterministic tests for the baseline reconciler:
 .venv/bin/python -m tests.memory.reconciliation.runner
 ```
 
-These tests do not call an LLM. They verify that candidate retrieval groups are
+These tests do not call an LLM. They verify that candidate match groups are
 turned into provider-neutral write plans.

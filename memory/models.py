@@ -27,6 +27,18 @@ MemoryRecordType = Literal[
     "time_link",
     "summary",
 ]
+MemoryObjectType = Literal[
+    "event",
+    "description",
+    "entity",
+    "property",
+    "link",
+    "time_ref",
+    "time_link",
+    "message",
+    "message_section",
+    "summary",
+]
 
 
 @dataclass(frozen=True)
@@ -82,6 +94,60 @@ class MemoryRecord:
     memory_type: MemoryRecordType
     text: str
     source_refs: list[MemorySourceRef] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MemoryObjectRef:
+    """Provider-neutral reference to a memory object."""
+
+    object_type: MemoryObjectType
+    object_id: str
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MemorySearchRequest:
+    """Request for the one search snapshot shared by a memory turn."""
+
+    user_id: str | None = None
+    session_id: str | None = None
+    query: str | None = None
+    timezone: str | None = None
+    candidates: list[MemoryRecord] = field(default_factory=list)
+    active_memory_context: "ActiveMemoryContext | None" = None
+    limit: int = 20
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MemorySearchHit:
+    """One recalled memory object before downstream hydration or matching."""
+
+    object_ref: MemoryObjectRef
+    score: float
+    reason: str
+    matched_text: str | None = None
+    record: MemoryRecord | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MemorySearchResult:
+    """Shared search result used for prompt context and reconciliation."""
+
+    hits: list[MemorySearchHit] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -159,6 +225,46 @@ class MemoryTurnResult:
     context_actions: list[ContextAction] = field(default_factory=list)
     created_memories: list[MemoryRecord] = field(default_factory=list)
     updated_memories: list[MemoryRecord] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MemoryTurnSnapshot:
+    """Prepared turn state reused before and after the LLM response."""
+
+    turn: MemoryTurnInput
+    candidates: list[MemoryRecord] = field(default_factory=list)
+    search_result: MemorySearchResult = field(default_factory=MemorySearchResult)
+    memory_context: list[MemoryContextBlock] = field(default_factory=list)
+    active_memory_context: ActiveMemoryContext | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MemoryTurnPrepareResult:
+    """Prepared memory state returned before an LLM response is generated."""
+
+    snapshot: MemoryTurnSnapshot
+    memory_context: list[MemoryContextBlock] = field(default_factory=list)
+    context_actions: list[ContextAction] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MemoryTurnCommitInput:
+    """Input for committing a prepared turn after the assistant responds."""
+
+    snapshot: MemoryTurnSnapshot
+    assistant_message: MemoryInputMessage | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:

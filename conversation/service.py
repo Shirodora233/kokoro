@@ -16,14 +16,19 @@ from memory import (
     MemoryContextBlock,
     MemoryExtractionPromptBuilder,
     MemoryInputMessage,
-    MemoryRetriever,
+    MemoryContextRetriever,
     MemoryRuntimeConfig,
+    MemorySearchResult,
     MemoryStore,
     MemorySystem,
+    MemoryTurnCommitInput,
     MemoryTurnInput,
+    MemoryTurnPrepareResult,
     MemoryTurnResult,
+    MemoryTurnSnapshot,
     MemoryWriteResultPersistenceSync,
-    NormalizedMemoryRetriever,
+    NormalizedMemoryContextRetriever,
+    PostgresNormalizedMemorySearch,
     InMemoryMemorySystem,
 )
 
@@ -63,12 +68,11 @@ class ConversationService:
         runtime_config = ConversationRuntimeConfig.from_env(env_file)
         memory_config = MemoryRuntimeConfig.from_env(env_file)
         memory_store: MemoryStore | None = None
-        memory_retriever: MemoryRetriever | None = None
+        memory_context_retriever: MemoryContextRetriever | None = None
         persistence_sync: MemoryWriteResultPersistenceSync | None = None
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
             from memory.persistence.postgres import (
-                PostgresNormalizedMemoryLookup,
                 PostgresPersistentMemoryRepository,
             )
             from memory.storage.postgres import PostgresMemoryStore
@@ -81,22 +85,22 @@ class ConversationService:
             persistence_sync = MemoryWriteResultPersistenceSync(
                 persistent_repository
             )
-            memory_retriever = NormalizedMemoryRetriever(
+            memory_context_retriever = NormalizedMemoryContextRetriever(
                 persistent_repository,
-                lookup=PostgresNormalizedMemoryLookup(persistent_repository),
+                search=PostgresNormalizedMemorySearch(persistent_repository),
             )
         else:
             store = JsonConversationStore(data_dir or default_data_dir())
         chat_client = OpenAIChatClient(config)
         memory_system = InMemoryMemorySystem(
             store=memory_store,
-            retriever=memory_retriever,
+            context_retriever=memory_context_retriever,
             persistence_sync=persistence_sync,
         )
         if memory_config.extraction_enabled:
             memory_system = InMemoryMemorySystem(
                 store=memory_store,
-                retriever=memory_retriever,
+                context_retriever=memory_context_retriever,
                 persistence_sync=persistence_sync,
                 extractor=LLMMemoryExtractor(
                     chat_client=chat_client,
@@ -208,12 +212,12 @@ class ConversationService:
             )
         )
 
-        memory_result = self._process_memory_turn(session, user_message)
-        self._apply_memory_context_actions(memory_result.context_actions)
+        memory_prepare = self._prepare_memory_turn(session, user_message)
+        self._apply_memory_context_actions(memory_prepare.context_actions)
 
         llm_messages = self._build_llm_context(
             session,
-            memory_context=memory_result.memory_context,
+            memory_context=memory_prepare.memory_context,
         )
         completion = self.chat_client.complete(
             llm_messages,
@@ -230,6 +234,11 @@ class ConversationService:
                 metadata={"provider_message_id": completion.provider_message_id},
             )
         )
+        memory_commit = self._commit_memory_turn(
+            memory_prepare.snapshot,
+            assistant_message,
+        )
+        self._apply_memory_context_actions(memory_commit.context_actions)
         return user_message, assistant_message
 
     def list_users(self) -> list[User]:
@@ -281,17 +290,44 @@ class ConversationService:
             page_size=page_size,
         )
 
-    def _process_memory_turn(
+    def _prepare_memory_turn(
         self,
         session: ChatSession,
         user_message: Message,
-    ) -> MemoryTurnResult:
+    ) -> MemoryTurnPrepareResult:
         turn = self._build_memory_turn_input(session, user_message)
         try:
-            return self.memory_system.process_turn(turn)
+            return self.memory_system.prepare_turn(turn)
         except Exception as error:
-            LOGGER.warning("Memory turn processing failed: %s", error)
-            return MemoryTurnResult()
+            LOGGER.warning("Memory turn preparation failed: %s", error)
+            snapshot = MemoryTurnSnapshot(
+                turn=turn,
+                search_result=MemorySearchResult(
+                    metadata={"error": str(error), "source": "prepare_turn"}
+                ),
+                metadata={"error": str(error), "source": "prepare_turn"},
+            )
+            return MemoryTurnPrepareResult(
+                snapshot=snapshot,
+                metadata=snapshot.metadata,
+            )
+
+    def _commit_memory_turn(
+        self,
+        snapshot: MemoryTurnSnapshot,
+        assistant_message: Message,
+    ) -> MemoryTurnResult:
+        try:
+            return self.memory_system.commit_turn(
+                MemoryTurnCommitInput(
+                    snapshot=snapshot,
+                    assistant_message=self._to_memory_input_message(assistant_message),
+                    metadata={"source": "conversation_service"},
+                )
+            )
+        except Exception as error:
+            LOGGER.warning("Memory turn commit failed: %s", error)
+            return MemoryTurnResult(metadata={"error": str(error)})
 
     def _build_memory_turn_input(
         self,

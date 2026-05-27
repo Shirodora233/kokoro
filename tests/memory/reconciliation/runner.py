@@ -6,13 +6,20 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from memory.models import MemoryRecord, MemoryRecordType, MemorySourceRef
+from memory.models import (
+    MemoryObjectRef,
+    MemoryRecord,
+    MemoryRecordType,
+    MemorySearchHit,
+    MemorySearchResult,
+    MemorySourceRef,
+)
 from memory.reconciliation import (
     DeterministicMemoryReconciler,
     MemoryReconciliationRequest,
     MemoryWritePlan,
 )
-from memory.retrieval import CandidateMemoryRetriever
+from memory.retrieval import CandidateMemoryMatcher
 from memory.storage import InMemoryMemoryStore
 
 USER_ID = "usr_reconcile_test"
@@ -215,8 +222,9 @@ def _plan(
     store: InMemoryMemoryStore,
     candidates: list[MemoryRecord],
 ) -> MemoryWritePlan:
-    retrieval = CandidateMemoryRetriever(store).retrieve_related(
+    retrieval = CandidateMemoryMatcher().match(
         candidates,
+        _search_result_from_store(store),
         user_id=USER_ID,
         session_id=SESSION_ID,
     )
@@ -227,6 +235,24 @@ def _plan(
             user_id=USER_ID,
             session_id=SESSION_ID,
         )
+    )
+
+
+def _search_result_from_store(store: InMemoryMemoryStore) -> MemorySearchResult:
+    records = store.list_records(user_id=USER_ID, session_id=SESSION_ID)
+    return MemorySearchResult(
+        hits=[
+            MemorySearchHit(
+                object_ref=MemoryObjectRef(record.memory_type, record.id or ""),
+                score=1.0,
+                reason="test_store_fixture",
+                matched_text=record.text,
+                record=record,
+            )
+            for record in records
+            if record.id
+        ],
+        metadata={"search": "test_store_fixture", "hit_count": len(records)},
     )
 
 

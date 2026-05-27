@@ -218,11 +218,12 @@ LLM provider 抽象位于 `llm/`，包括 `ChatClient`、`ChatMessageParam`、`L
 
 - 默认通过 `LLMMemoryExtractor` 从新消息和近期上下文中抽取候选记忆。
 - PostgreSQL 后端会同时写入 generic `memory_records` 和范式化 memory tables。
-- prompt retrieval 在 PostgreSQL 后端使用 `PostgresNormalizedMemoryLookup` 先在数据库层
+- prompt context retrieval 在 PostgreSQL 后端使用 `PostgresNormalizedMemorySearch` 先在数据库层
   筛选 event/description/entity/property 候选，并通过 normalized ranker 按匹配质量、scope、
   importance、confidence 和 recency 重排，再由 normalized retriever hydrate 成干净上下文；
   raw `link` / `time_link` 只用于组装关系，不直接塞进 prompt。
-- candidate retrieval 仍使用 generic `MemoryStore` 给 reconciler 查重、reuse 和 attach。
+- reconciliation matching 复用本轮 `MemoryTurnSnapshot` 里的同一份 search result，给 reconciler
+  生成 direct/expanded candidate groups，不再额外做第二次 retrieval。
 - 可通过传入 `NoopMemorySystem` 临时关闭记忆链路。
 
 抽取实现拆在 `memory/extraction/`：`pipeline.py` 负责流程编排，`llm.py` 只负责调用模型，`prompt.py`、`parser.py`、`normalizer.py` 分别负责提示词、JSON 解析和候选规范化。

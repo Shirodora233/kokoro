@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 from .interfaces import MemorySystem
-from .models import MemoryRetrievalRequest, MemoryRetrievalResult, MemoryTurnInput, MemoryTurnResult
+from .models import (
+    MemoryRetrievalRequest,
+    MemoryRetrievalResult,
+    MemorySearchResult,
+    MemoryTurnCommitInput,
+    MemoryTurnInput,
+    MemoryTurnPrepareResult,
+    MemoryTurnResult,
+    MemoryTurnSnapshot,
+)
 
 
 class NoopMemorySystem(MemorySystem):
     """Memory boundary implementation that preserves existing behavior."""
 
-    def process_turn(self, turn: MemoryTurnInput) -> MemoryTurnResult:
+    def prepare_turn(self, turn: MemoryTurnInput) -> MemoryTurnPrepareResult:
+        snapshot = MemoryTurnSnapshot(
+            turn=turn,
+            search_result=MemorySearchResult(metadata={"search": "noop"}),
+            metadata={"memory_runtime": self.__class__.__name__},
+        )
+        return MemoryTurnPrepareResult(snapshot=snapshot, metadata=snapshot.metadata)
+
+    def commit_turn(self, commit: MemoryTurnCommitInput) -> MemoryTurnResult:
         return MemoryTurnResult()
 
     def retrieve_context(self, request: MemoryRetrievalRequest) -> MemoryRetrievalResult:

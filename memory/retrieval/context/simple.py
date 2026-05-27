@@ -1,16 +1,20 @@
-"""Simple in-memory retrieval and rendering."""
+"""Simple store-backed memory context retrieval and rendering."""
 
 from __future__ import annotations
 
 from typing import Sequence
 
-from ..interfaces import MemoryContextRenderer, MemoryStore
-from ..models import (
+from ...interfaces import MemoryContextRenderer, MemoryStore
+from ...models import (
     ActiveMemoryContext,
     MemoryContextBlock,
+    MemoryObjectRef,
     MemoryRecord,
     MemoryRetrievalRequest,
     MemoryRetrievalResult,
+    MemorySearchHit,
+    MemorySearchRequest,
+    MemorySearchResult,
 )
 
 
@@ -41,8 +45,8 @@ class SimpleMemoryContextRenderer:
         ]
 
 
-class InMemoryMemoryRetriever:
-    """Scope-aware retrieval over the process-local memory store."""
+class SimpleMemoryContextRetriever:
+    """Scope-aware context retrieval over a generic memory store."""
 
     def __init__(
         self,
@@ -54,7 +58,7 @@ class InMemoryMemoryRetriever:
         self.renderer = renderer or SimpleMemoryContextRenderer()
         self.default_limit = default_limit
 
-    def retrieve(self, request: MemoryRetrievalRequest) -> MemoryRetrievalResult:
+    def search(self, request: MemorySearchRequest) -> MemorySearchResult:
         active_records = self._records_from_active_context(request.active_memory_context)
         stored_records = self.store.list_records(
             user_id=request.user_id,
@@ -69,19 +73,66 @@ class InMemoryMemoryRetriever:
                 if self._matches_query(record, request.query)
             ]
 
+        limit = max(0, request.limit)
+        hits = [
+            MemorySearchHit(
+                object_ref=MemoryObjectRef(record.memory_type, record.id or ""),
+                score=1.0,
+                reason="store_text_match",
+                matched_text=record.text,
+                record=record,
+                metadata={"source": "simple_store_context"},
+            )
+            for record in records[:limit]
+            if record.id
+        ]
+        return MemorySearchResult(
+            hits=hits,
+            metadata={
+                "search": "simple_store_context",
+                "store": self.store.__class__.__name__,
+                "hit_count": len(hits),
+                "total_candidates": len(records),
+            },
+        )
+
+    def retrieve_from_search(
+        self,
+        search_result: MemorySearchResult,
+        request: MemoryRetrievalRequest,
+    ) -> MemoryRetrievalResult:
         limit = self.default_limit if request.limit is None else max(0, request.limit)
-        selected_records = records[:limit]
+        selected_records = [
+            hit.record
+            for hit in search_result.hits
+            if hit.record is not None
+        ][:limit]
         context_blocks = list(self.renderer.render(selected_records))
         return MemoryRetrievalResult(
             memory_context=context_blocks,
             records=selected_records,
             metadata={
-                "retriever": "simple_scope_text",
+                "retriever": "simple_store_context",
                 "store": self.store.__class__.__name__,
                 "record_count": len(selected_records),
-                "total_candidates": len(records),
+                "search": search_result.metadata,
             },
         )
+
+    def retrieve(self, request: MemoryRetrievalRequest) -> MemoryRetrievalResult:
+        limit = self.default_limit if request.limit is None else max(0, request.limit)
+        search_result = self.search(
+            MemorySearchRequest(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                query=request.query,
+                timezone=request.timezone,
+                active_memory_context=request.active_memory_context,
+                limit=limit,
+                metadata=dict(request.metadata),
+            )
+        )
+        return self.retrieve_from_search(search_result, request)
 
     def _records_from_active_context(
         self,
@@ -116,5 +167,7 @@ class InMemoryMemoryRetriever:
             str(record.metadata.get("name", "")),
             str(record.metadata.get("identity_summary", "")),
         ]
-        searchable = " ".join(searchable_parts).casefold()
-        return normalized_query in searchable
+        searchable = " ".join(searchable_parts).casefold().strip()
+        if not searchable:
+            return False
+        return normalized_query in searchable or searchable in normalized_query

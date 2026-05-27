@@ -1,21 +1,22 @@
-"""PostgreSQL lookup for normalized memory retrieval."""
+"""PostgreSQL search for normalized memory context retrieval."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ...persistence.models import ObjectType, PersistentObjectRef
-from ...retrieval.lookup import (
-    NormalizedMemoryLookupHit,
-    NormalizedMemoryLookupRequest,
-    NormalizedMemoryLookupResult,
+from ....models import (
+    MemoryObjectRef,
+    MemoryObjectType,
+    MemorySearchHit,
+    MemorySearchRequest,
+    MemorySearchResult,
 )
-from ...retrieval.ranking import NormalizedMemoryRanker
-from .repository import PostgresPersistentMemoryRepository
+from ....persistence.postgres.repository import PostgresPersistentMemoryRepository
+from .ranking import NormalizedMemoryRanker
 
 
-class PostgresNormalizedMemoryLookup:
+class PostgresNormalizedMemorySearch:
     """Find normalized memory object refs with database-side lexical filtering."""
 
     def __init__(
@@ -28,32 +29,29 @@ class PostgresNormalizedMemoryLookup:
         self.per_table_limit = per_table_limit
         self.ranker = ranker or NormalizedMemoryRanker()
 
-    def lookup(
-        self,
-        request: NormalizedMemoryLookupRequest,
-    ) -> NormalizedMemoryLookupResult:
+    def search(self, request: MemorySearchRequest) -> MemorySearchResult:
         limit = max(0, request.limit)
         if limit == 0:
-            return NormalizedMemoryLookupResult(
-                metadata={"lookup": "postgres_normalized", "hit_count": 0}
+            return MemorySearchResult(
+                metadata={"search": "postgres_normalized", "hit_count": 0}
             )
 
         query = (request.query or "").strip()
         terms = _search_terms(query)
         if not terms:
-            hits = self._recent_hits(request, limit)
-            return NormalizedMemoryLookupResult(
+            hits = self.ranker.rank(self._recent_hits(request, limit), request)[:limit]
+            return MemorySearchResult(
                 hits=hits,
                 metadata={
-                    "lookup": "postgres_normalized",
+                    "search": "postgres_normalized",
                     "strategy": "recent",
                     "hit_count": len(hits),
                 },
             )
 
-        hits = []
+        hits: list[MemorySearchHit] = []
         hits.extend(
-            self._lookup_table(
+            self._search_table(
                 table="memory_entities",
                 object_type="entity",
                 text_expression=(
@@ -67,7 +65,7 @@ class PostgresNormalizedMemoryLookup:
             )
         )
         hits.extend(
-            self._lookup_table(
+            self._search_table(
                 table="memory_events",
                 object_type="event",
                 text_expression="concat_ws(' ', title, summary, event_type)",
@@ -79,7 +77,7 @@ class PostgresNormalizedMemoryLookup:
             )
         )
         hits.extend(
-            self._lookup_table(
+            self._search_table(
                 table="memory_properties",
                 object_type="property",
                 text_expression="concat_ws(' ', content, property_type)",
@@ -91,7 +89,7 @@ class PostgresNormalizedMemoryLookup:
             )
         )
         hits.extend(
-            self._lookup_table(
+            self._search_table(
                 table="memory_descriptions",
                 object_type="description",
                 text_expression="concat_ws(' ', content, description_type)",
@@ -103,10 +101,10 @@ class PostgresNormalizedMemoryLookup:
             )
         )
         selected = self.ranker.rank(hits, request)[:limit]
-        return NormalizedMemoryLookupResult(
+        return MemorySearchResult(
             hits=selected,
             metadata={
-                "lookup": "postgres_normalized",
+                "search": "postgres_normalized",
                 "strategy": "lexical",
                 "hit_count": len(selected),
                 "top_score": selected[0].score if selected else None,
@@ -117,9 +115,9 @@ class PostgresNormalizedMemoryLookup:
 
     def _recent_hits(
         self,
-        request: NormalizedMemoryLookupRequest,
+        request: MemorySearchRequest,
         limit: int,
-    ) -> list[NormalizedMemoryLookupHit]:
+    ) -> list[MemorySearchHit]:
         event_rows = self._recent_table_rows(
             table="memory_events",
             object_type="event",
@@ -153,23 +151,26 @@ class PostgresNormalizedMemoryLookup:
             for row in rows[:limit]
         ]
 
-    def _lookup_table(
+    def _search_table(
         self,
         table: str,
-        object_type: ObjectType,
+        object_type: MemoryObjectType,
         text_expression: str,
         base_score: float,
         reason: str,
-        request: NormalizedMemoryLookupRequest,
+        request: MemorySearchRequest,
         terms: Sequence[str],
         status_column: str | None,
-    ) -> list[NormalizedMemoryLookupHit]:
+    ) -> list[MemorySearchHit]:
         conditions, params = _scope_conditions(request)
         if status_column is not None:
             conditions.insert(0, f"{status_column} = 'active'")
+        term_conditions: list[str] = []
         for term in terms:
-            conditions.append(f"strpos(lower({text_expression}), %s) > 0")
+            term_conditions.append(f"strpos(lower({text_expression}), %s) > 0")
             params.append(term)
+        if term_conditions:
+            conditions.append("(" + " OR ".join(term_conditions) + ")")
         where_sql = " AND ".join(conditions) if conditions else "TRUE"
         per_table_limit = max(request.limit, self.per_table_limit)
         query = f"""
@@ -206,9 +207,9 @@ class PostgresNormalizedMemoryLookup:
     def _recent_table_rows(
         self,
         table: str,
-        object_type: ObjectType,
+        object_type: MemoryObjectType,
         text_expression: str,
-        request: NormalizedMemoryLookupRequest,
+        request: MemorySearchRequest,
         status_column: str | None,
         limit: int,
     ) -> list[Mapping[str, Any]]:
@@ -238,9 +239,7 @@ class PostgresNormalizedMemoryLookup:
             ).fetchall()
 
 
-def _scope_conditions(
-    request: NormalizedMemoryLookupRequest,
-) -> tuple[list[str], list[object]]:
+def _scope_conditions(request: MemorySearchRequest) -> tuple[list[str], list[object]]:
     conditions: list[str] = []
     params: list[object] = []
     if request.user_id is not None or request.session_id is not None:
@@ -255,10 +254,7 @@ def _search_terms(query: str) -> list[str]:
     return [term for term in query.casefold().split() if term]
 
 
-def _match_quality(
-    text: str | None,
-    terms: Sequence[str],
-) -> str:
+def _match_quality(text: str | None, terms: Sequence[str]) -> str:
     if not text:
         return "term"
     normalized = text.casefold()
@@ -280,7 +276,7 @@ def _row_to_hit(
     reason: str,
     match_quality: str,
     terms: Sequence[str] | None = None,
-) -> NormalizedMemoryLookupHit:
+) -> MemorySearchHit:
     metadata: dict[str, Any] = {"match_quality": match_quality}
     updated_at = row.get("updated_at")
     if updated_at is not None:
@@ -291,13 +287,14 @@ def _row_to_hit(
             metadata[key] = value
     if terms:
         metadata["terms"] = list(terms)
-    return NormalizedMemoryLookupHit(
-        object_ref=PersistentObjectRef(
+    return MemorySearchHit(
+        object_ref=MemoryObjectRef(
             object_type=row["object_type"],
             object_id=row["object_id"],
         ),
         score=score,
         reason=reason,
         matched_text=row.get("matched_text"),
+        record=None,
         metadata=metadata,
     )

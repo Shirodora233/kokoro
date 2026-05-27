@@ -8,6 +8,10 @@ Run it from the repository root:
 .venv/bin/python -m web_frontend.server --port 8765
 ```
 
+```bash
+ssh -L 8765:127.0.0.1:8765 wsl-rm
+```
+
 Open:
 
 ```text

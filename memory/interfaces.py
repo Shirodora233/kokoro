@@ -11,7 +11,11 @@ from .models import (
     MemoryRecordType,
     MemoryRetrievalRequest,
     MemoryRetrievalResult,
+    MemorySearchRequest,
+    MemorySearchResult,
+    MemoryTurnCommitInput,
     MemoryTurnInput,
+    MemoryTurnPrepareResult,
     MemoryTurnResult,
 )
 
@@ -19,8 +23,11 @@ from .models import (
 class MemorySystem(Protocol):
     """High-level memory boundary used by conversation and other producers."""
 
-    def process_turn(self, turn: MemoryTurnInput) -> MemoryTurnResult:
-        """Process one new message with conversation context."""
+    def prepare_turn(self, turn: MemoryTurnInput) -> MemoryTurnPrepareResult:
+        """Prepare memory context and a reusable turn snapshot before an LLM call."""
+
+    def commit_turn(self, commit: MemoryTurnCommitInput) -> MemoryTurnResult:
+        """Commit a prepared turn after an LLM response."""
 
     def retrieve_context(self, request: MemoryRetrievalRequest) -> MemoryRetrievalResult:
         """Return memory context without ingesting a new turn."""
@@ -52,8 +59,18 @@ class MemoryStore(Protocol):
         """Load memory records by scope and type."""
 
 
-class MemoryRetriever(Protocol):
-    """Retrieve memory records and prompt context."""
+class MemoryContextRetriever(Protocol):
+    """Search memory and render prompt context."""
+
+    def search(self, request: MemorySearchRequest) -> MemorySearchResult:
+        """Return the reusable memory search snapshot for a request."""
+
+    def retrieve_from_search(
+        self,
+        search_result: MemorySearchResult,
+        request: MemoryRetrievalRequest,
+    ) -> MemoryRetrievalResult:
+        """Render prompt context from a precomputed search result."""
 
     def retrieve(self, request: MemoryRetrievalRequest) -> MemoryRetrievalResult:
         """Return records and context blocks relevant to a request."""

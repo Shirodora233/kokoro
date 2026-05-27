@@ -8,9 +8,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from memory.models import (
+    MemoryObjectRef,
     MemoryRecord,
     MemoryRecordType,
     MemoryRetrievalRequest,
+    MemorySearchHit,
+    MemorySearchRequest,
+    MemorySearchResult,
     MemorySourceRef,
 )
 from memory.persistence import (
@@ -25,14 +29,11 @@ from memory.persistence import (
     PersistentTimeRef,
 )
 from memory.retrieval import (
-    CandidateMemoryRetriever,
+    CandidateMemoryMatcher,
     CandidateRelatedGroup,
     CandidateRetrievalResult,
-    NormalizedMemoryLookupHit,
-    NormalizedMemoryLookupRequest,
-    NormalizedMemoryLookupResult,
     NormalizedMemoryRanker,
-    NormalizedMemoryRetriever,
+    NormalizedMemoryContextRetriever,
     RelatedMemory,
 )
 from memory.storage import InMemoryMemoryStore
@@ -55,7 +56,7 @@ def main() -> int:
         test_unrelated_candidate_returns_empty,
         test_normalized_retrieval_renders_event_view_without_raw_links,
         test_normalized_retrieval_query_matches_entity_property,
-        test_normalized_lookup_hydrates_description_hit_without_recent_pool,
+        test_normalized_search_hydrates_description_hit_without_recent_pool,
         test_normalized_ranker_prioritizes_session_high_quality_hit,
     ]
     for test in tests:
@@ -77,7 +78,7 @@ def test_entity_exact_match() -> None:
             )
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [_candidate("entity", "茉莉花茶", client_id="cand_tea")],
         user_id=USER_ID,
         session_id=SESSION_ID,
@@ -111,7 +112,7 @@ def test_entity_match_expands_properties() -> None:
             ),
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [_candidate("entity", "茉莉花茶", client_id="cand_tea")],
         user_id=USER_ID,
         session_id=SESSION_ID,
@@ -172,7 +173,7 @@ def test_event_match_expands_description_and_time() -> None:
             ),
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [
             _candidate(
                 "event",
@@ -224,7 +225,7 @@ def test_one_hop_expansion_does_not_chain() -> None:
             ),
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [_candidate("entity", "茉莉花茶", client_id="cand_tea")],
         user_id=USER_ID,
         session_id=SESSION_ID,
@@ -256,7 +257,7 @@ def test_groups_keep_direct_and_expanded_separate() -> None:
             ),
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [_candidate("entity", "茉莉花茶", client_id="cand_tea")],
         user_id=USER_ID,
         session_id=SESSION_ID,
@@ -271,7 +272,7 @@ def test_groups_include_unmatched_candidates() -> None:
     store = InMemoryMemoryStore(
         [_record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea")]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [
             _candidate("entity", "茉莉花茶", client_id="cand_tea"),
             _candidate("entity", "蓝色收音机", client_id="cand_radio"),
@@ -293,7 +294,7 @@ def test_groups_separate_multiple_candidates() -> None:
             _record("ent_radio", "entity", "蓝色收音机", client_id="ent_radio"),
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [
             _candidate("entity", "茉莉花茶", client_id="cand_tea"),
             _candidate("entity", "蓝色收音机", client_id="cand_radio"),
@@ -322,7 +323,7 @@ def test_groups_preserve_shared_record_matches() -> None:
             _record("ent_radio", "entity", "蓝色收音机", client_id="ent_radio"),
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [
             _candidate(
                 "event",
@@ -356,7 +357,7 @@ def test_scope_filtering() -> None:
             ),
         ]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [_candidate("entity", "茉莉花茶", client_id="cand_tea")],
         user_id=USER_ID,
         session_id=SESSION_ID,
@@ -370,7 +371,7 @@ def test_unrelated_candidate_returns_empty() -> None:
     store = InMemoryMemoryStore(
         [_record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea")]
     )
-    result = CandidateMemoryRetriever(store).retrieve_related(
+    result = _match(store, 
         [_candidate("entity", "蓝色收音机", client_id="cand_radio")],
         user_id=USER_ID,
         session_id=SESSION_ID,
@@ -379,7 +380,7 @@ def test_unrelated_candidate_returns_empty() -> None:
 
 
 def test_normalized_retrieval_renders_event_view_without_raw_links() -> None:
-    result = NormalizedMemoryRetriever(_NormalizedFixtureRepository()).retrieve(
+    result = NormalizedMemoryContextRetriever(_NormalizedFixtureRepository()).retrieve(
         MemoryRetrievalRequest(
             user_id=USER_ID,
             session_id=SESSION_ID,
@@ -400,7 +401,7 @@ def test_normalized_retrieval_renders_event_view_without_raw_links() -> None:
 
 
 def test_normalized_retrieval_query_matches_entity_property() -> None:
-    result = NormalizedMemoryRetriever(_NormalizedFixtureRepository()).retrieve(
+    result = NormalizedMemoryContextRetriever(_NormalizedFixtureRepository()).retrieve(
         MemoryRetrievalRequest(
             user_id=USER_ID,
             session_id=SESSION_ID,
@@ -415,13 +416,13 @@ def test_normalized_retrieval_query_matches_entity_property() -> None:
     assert "link_visit_doctor" not in content
 
 
-def test_normalized_lookup_hydrates_description_hit_without_recent_pool() -> None:
-    result = NormalizedMemoryRetriever(
+def test_normalized_search_hydrates_description_hit_without_recent_pool() -> None:
+    result = NormalizedMemoryContextRetriever(
         _NoRecentNormalizedFixtureRepository(),
-        lookup=_StaticNormalizedLookup(
+        search=_StaticNormalizedSearch(
             [
-                NormalizedMemoryLookupHit(
-                    object_ref=PersistentObjectRef("description", "desc_visit"),
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("description", "desc_visit"),
                     score=0.9,
                     reason="description_text_match",
                     matched_text="静安门诊",
@@ -441,11 +442,11 @@ def test_normalized_lookup_hydrates_description_hit_without_recent_pool() -> Non
 
     assert "Event: 复诊安排" in content
     assert "Details: 用户计划明天上午十点和林医生复诊，地点在静安门诊。" in content
-    assert result.metadata["lookup"]["lookup"] == "static"
+    assert result.metadata["search"]["search"] == "static"
 
 
 def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:
-    request = NormalizedMemoryLookupRequest(
+    request = MemorySearchRequest(
         user_id=USER_ID,
         session_id=SESSION_ID,
         query="林医生",
@@ -456,8 +457,8 @@ def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:
     )
     ranked = ranker.rank(
         [
-            NormalizedMemoryLookupHit(
-                object_ref=PersistentObjectRef("entity", "ent_global"),
+            MemorySearchHit(
+                object_ref=MemoryObjectRef("entity", "ent_global"),
                 score=1.0,
                 reason="entity_text_match",
                 matched_text="林医生",
@@ -467,8 +468,8 @@ def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:
                     "confidence": "medium",
                 },
             ),
-            NormalizedMemoryLookupHit(
-                object_ref=PersistentObjectRef("event", "evt_session"),
+            MemorySearchHit(
+                object_ref=MemoryObjectRef("event", "evt_session"),
                 score=0.95,
                 reason="event_text_match",
                 matched_text="林医生复诊安排",
@@ -490,6 +491,44 @@ def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:
     assert ranking["components"]["scope"] > 0
     assert ranking["components"]["importance"] > 0
     assert ranking["components"]["confidence"] > 0
+
+
+def _match(
+    store: InMemoryMemoryStore,
+    candidates: list[MemoryRecord],
+    user_id: str | None = USER_ID,
+    session_id: str | None = SESSION_ID,
+    limit: int | None = None,
+) -> CandidateRetrievalResult:
+    return CandidateMemoryMatcher().match(
+        candidates,
+        _search_result_from_store(store, user_id=user_id, session_id=session_id),
+        user_id=user_id,
+        session_id=session_id,
+        limit=limit,
+    )
+
+
+def _search_result_from_store(
+    store: InMemoryMemoryStore,
+    user_id: str | None = USER_ID,
+    session_id: str | None = SESSION_ID,
+) -> MemorySearchResult:
+    records = store.list_records(user_id=user_id, session_id=session_id)
+    return MemorySearchResult(
+        hits=[
+            MemorySearchHit(
+                object_ref=MemoryObjectRef(record.memory_type, record.id or ""),
+                score=1.0,
+                reason="test_store_fixture",
+                matched_text=record.text,
+                record=record,
+            )
+            for record in records
+            if record.id
+        ],
+        metadata={"search": "test_store_fixture", "hit_count": len(records)},
+    )
 
 
 def _record(
@@ -824,18 +863,18 @@ class _NoRecentNormalizedFixtureRepository(_NormalizedFixtureRepository):
         return []
 
 
-class _StaticNormalizedLookup:
-    def __init__(self, hits: list[NormalizedMemoryLookupHit]) -> None:
+class _StaticNormalizedSearch:
+    def __init__(self, hits: list[MemorySearchHit]) -> None:
         self.hits = hits
 
-    def lookup(
+    def search(
         self,
-        request: NormalizedMemoryLookupRequest,
-    ) -> NormalizedMemoryLookupResult:
-        return NormalizedMemoryLookupResult(
+        request: MemorySearchRequest,
+    ) -> MemorySearchResult:
+        return MemorySearchResult(
             hits=self.hits[: request.limit],
             metadata={
-                "lookup": "static",
+                "search": "static",
                 "hit_count": min(len(self.hits), request.limit),
             },
         )

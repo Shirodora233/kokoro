@@ -1,34 +1,32 @@
-"""Memory retrieval, search, and matching components."""
+"""Prompt context retrieval implementations."""
 
-from .context import SimpleMemoryContextRenderer, SimpleMemoryContextRetriever
-from .context.normalized import (
+from .normalized import (
     FallbackNormalizedMemorySearch,
+    HydratedMemoryViews,
     NormalizedEntityMemoryView,
     NormalizedEventMemoryView,
+    NormalizedMemoryContextRenderer,
     NormalizedMemoryContextRetriever,
+    NormalizedMemoryHydrator,
     NormalizedMemoryRanker,
     NormalizedMemorySearch,
+    NormalizedSelectedMemoryView,
     PostgresNormalizedMemorySearch,
 )
-from .reconciliation import (
-    CandidateMemoryMatcher,
-    CandidateRelatedGroup,
-    CandidateRetrievalResult,
-    RelatedMemory,
-)
+from .simple import SimpleMemoryContextRenderer, SimpleMemoryContextRetriever
 
 __all__ = [
-    "CandidateMemoryMatcher",
-    "CandidateRelatedGroup",
-    "CandidateRetrievalResult",
     "FallbackNormalizedMemorySearch",
+    "HydratedMemoryViews",
     "NormalizedEntityMemoryView",
     "NormalizedEventMemoryView",
+    "NormalizedMemoryContextRenderer",
     "NormalizedMemoryContextRetriever",
+    "NormalizedMemoryHydrator",
     "NormalizedMemoryRanker",
     "NormalizedMemorySearch",
+    "NormalizedSelectedMemoryView",
     "PostgresNormalizedMemorySearch",
-    "RelatedMemory",
     "SimpleMemoryContextRenderer",
     "SimpleMemoryContextRetriever",
 ]

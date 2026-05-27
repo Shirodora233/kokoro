@@ -5,7 +5,12 @@ from __future__ import annotations
 import sys
 
 from conversation.config import StorageConfig
-from memory.models import MemoryRecord, MemoryRetrievalRequest, MemorySourceRef
+from memory.models import (
+    MemoryRecord,
+    MemoryRetrievalRequest,
+    MemorySearchRequest,
+    MemorySourceRef,
+)
 from memory.persistence.models import (
     PersistentDescription,
     PersistentEntity,
@@ -19,11 +24,11 @@ from memory.persistence.models import (
     PersistentTimeRef,
 )
 from memory.persistence import MemoryWriteResultPersistenceSync
-from memory.persistence.postgres import (
-    PostgresNormalizedMemoryLookup,
-    PostgresPersistentMemoryRepository,
+from memory.persistence.postgres import PostgresPersistentMemoryRepository
+from memory.retrieval import (
+    NormalizedMemoryContextRetriever,
+    PostgresNormalizedMemorySearch,
 )
-from memory.retrieval import NormalizedMemoryRetriever
 from memory.writing import MemoryWriteResult
 
 USER_ID = "usr_persistence_test"
@@ -321,9 +326,9 @@ def test_normalized_retriever_reads_postgres_views(
 ) -> None:
     test_sync_write_result_to_persistent_bundle(repository)
 
-    retriever = NormalizedMemoryRetriever(
+    retriever = NormalizedMemoryContextRetriever(
         repository,
-        lookup=PostgresNormalizedMemoryLookup(repository),
+        search=PostgresNormalizedMemorySearch(repository),
     )
     result = retriever.retrieve(
         MemoryRetrievalRequest(
@@ -342,7 +347,7 @@ def test_normalized_retriever_reads_postgres_views(
     assert "Entities: 林医生" in content
     assert LINK_ID not in content
     assert TIME_LINK_ID not in content
-    assert result.metadata["lookup"]["strategy"] == "lexical"
+    assert result.metadata["search"]["strategy"] == "lexical"
     assert any(record.id == EVENT_ID for record in result.records)
 
     entity_result = retriever.retrieve(
@@ -356,6 +361,19 @@ def test_normalized_retriever_reads_postgres_views(
     entity_content = entity_result.memory_context[0].content
     assert "Entity: 林医生 (person)" in entity_content
     assert "Properties: 林医生是用户此次复诊的医生。" in entity_content
+
+    snapshot_like_search = retriever.search(
+        MemorySearchRequest(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            query="用户又提到后续安排 静安门诊 新候选事实",
+            limit=4,
+        )
+    )
+    assert any(
+        hit.object_ref.object_id == DESCRIPTION_ID
+        for hit in snapshot_like_search.hits
+    )
 
 
 def _cleanup(repository: PostgresPersistentMemoryRepository) -> None:

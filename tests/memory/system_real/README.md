@@ -4,7 +4,8 @@ These tests call the configured real LLM and run candidates through the full
 in-memory memory runtime:
 
 - `LLMMemoryExtractor`
-- candidate retrieval
+- prepare-turn memory search snapshot
+- commit-turn candidate matching
 - deterministic reconciliation
 - write-plan application
 - active-memory refresh

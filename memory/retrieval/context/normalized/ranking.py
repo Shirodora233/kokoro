@@ -1,4 +1,4 @@
-"""Ranking rules for normalized memory lookup hits."""
+"""Ranking rules for normalized memory search hits."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Sequence
 
 if TYPE_CHECKING:
-    from .lookup import NormalizedMemoryLookupHit, NormalizedMemoryLookupRequest
+    from ....models import MemorySearchHit, MemorySearchRequest
 
 
 class NormalizedMemoryRanker:
-    """Score normalized lookup hits before hydration.
+    """Score normalized search hits before hydration.
 
-    The ranker keeps lookup implementations focused on recall. It centralizes
+    The ranker keeps search implementations focused on recall. It centralizes
     ranking rules that affect which event/entity views are eventually rendered
     into prompt context.
     """
@@ -23,9 +23,9 @@ class NormalizedMemoryRanker:
 
     def rank(
         self,
-        hits: Sequence[NormalizedMemoryLookupHit],
-        request: NormalizedMemoryLookupRequest,
-    ) -> list[NormalizedMemoryLookupHit]:
+        hits: Sequence[MemorySearchHit],
+        request: MemorySearchRequest,
+    ) -> list[MemorySearchHit]:
         ranked = [self._rank_hit(hit, request) for hit in hits]
         deduped = _dedupe_best_hit(ranked)
         return sorted(
@@ -39,9 +39,9 @@ class NormalizedMemoryRanker:
 
     def _rank_hit(
         self,
-        hit: NormalizedMemoryLookupHit,
-        request: NormalizedMemoryLookupRequest,
-    ) -> NormalizedMemoryLookupHit:
+        hit: MemorySearchHit,
+        request: MemorySearchRequest,
+    ) -> MemorySearchHit:
         metadata = dict(hit.metadata)
         components = {
             "base": hit.score,
@@ -68,9 +68,9 @@ class NormalizedMemoryRanker:
 
 
 def _dedupe_best_hit(
-    hits: Sequence[NormalizedMemoryLookupHit],
-) -> list[NormalizedMemoryLookupHit]:
-    selected: dict[tuple[str, str], NormalizedMemoryLookupHit] = {}
+    hits: Sequence[MemorySearchHit],
+) -> list[MemorySearchHit]:
+    selected: dict[tuple[str, str], MemorySearchHit] = {}
     for hit in hits:
         key = (hit.object_ref.object_type, hit.object_ref.object_id)
         previous = selected.get(key)

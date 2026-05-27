@@ -1,13 +1,12 @@
-"""Candidate-aware retrieval for memory reconciliation."""
+"""Candidate-aware matching for memory reconciliation."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, cast
 
-from ..interfaces import MemoryStore
-from ..models import MemoryRecord
+from ...models import MemoryRecord, MemoryRecordType, MemorySearchResult
 
 _ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _CJK_CHUNK_PATTERN = re.compile(r"[\u4e00-\u9fff]+")
@@ -73,33 +72,32 @@ class _RecordIndex:
     links: list[MemoryRecord]
 
 
-class CandidateMemoryRetriever:
-    """Retrieve stored memories related to extracted candidates.
+class CandidateMemoryMatcher:
+    """Match extracted candidates against a prepared memory search result.
 
-    This retriever is intentionally deterministic. It prepares context for a
+    This matcher is intentionally deterministic. It prepares context for a
     future reconciler; it does not deduplicate, merge, or decide writes.
     """
 
     def __init__(
         self,
-        store: MemoryStore,
         min_score: float = 1.0,
         default_limit: int = 30,
         expand_one_hop: bool = True,
     ) -> None:
-        self.store = store
         self.min_score = min_score
         self.default_limit = default_limit
         self.expand_one_hop = expand_one_hop
 
-    def retrieve_related(
+    def match(
         self,
         candidates: Sequence[MemoryRecord],
+        search_result: MemorySearchResult,
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
     ) -> CandidateRetrievalResult:
-        stored_records = self.store.list_records(user_id=user_id, session_id=session_id)
+        stored_records = _records_from_search_result(search_result)
         index = self._build_index(stored_records)
         candidate_index = self._build_candidate_index(candidates)
         related: dict[str, _MutableRelated] = {}
@@ -155,8 +153,8 @@ class CandidateMemoryRetriever:
                 selected_keys,
             ),
             metadata={
-                "retriever": "candidate_rule_based",
-                "store": self.store.__class__.__name__,
+                "matcher": "candidate_rule_based",
+                "search": search_result.metadata,
                 "candidate_count": len(candidates),
                 "stored_record_count": len(stored_records),
                 "related_count": len(related),
@@ -567,6 +565,46 @@ class CandidateMemoryRetriever:
 def _client_id(record: MemoryRecord) -> str | None:
     value = record.metadata.get("candidate_client_id")
     return value if isinstance(value, str) and value else None
+
+
+def _records_from_search_result(search_result: MemorySearchResult) -> list[MemoryRecord]:
+    records: list[MemoryRecord] = []
+    seen: set[str] = set()
+    for hit in search_result.hits:
+        record = hit.record or _record_from_hit(hit)
+        if record is None:
+            continue
+        key = _stable_record_key(record)
+        if key in seen:
+            continue
+        records.append(record)
+        seen.add(key)
+    return records
+
+
+def _record_from_hit(hit) -> MemoryRecord | None:
+    object_type = hit.object_ref.object_type
+    if object_type not in {
+        "event",
+        "description",
+        "entity",
+        "property",
+        "link",
+        "time_ref",
+        "time_link",
+        "summary",
+    }:
+        return None
+    return MemoryRecord(
+        id=hit.object_ref.object_id,
+        memory_type=cast(MemoryRecordType, object_type),
+        text=hit.matched_text or hit.object_ref.object_id,
+        metadata={
+            **dict(hit.metadata),
+            "search_reason": hit.reason,
+            "search_score": hit.score,
+        },
+    )
 
 
 def _stable_record_key(record: MemoryRecord) -> str:

@@ -3,7 +3,8 @@
 These tests exercise the in-memory composition layer:
 
 - extraction candidates are scoped to the current turn,
-- candidate retrieval feeds reconciliation,
+- prepare builds a reusable memory search snapshot before the LLM call,
+- commit reuses that snapshot for candidate matching and reconciliation,
 - write plans are applied to the in-memory store,
 - active memory context and prompt retrieval are refreshed from written records.
 

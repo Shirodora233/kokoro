@@ -12,6 +12,7 @@ from llm.config import LLMConfig
 from llm.openai_client import OpenAIChatClient
 from memory.config import MemoryRuntimeConfig
 from memory.extraction import LLMMemoryExtractor, MemoryExtractionPromptBuilder
+from memory.models import MemoryInputMessage, MemoryTurnCommitInput
 from memory.system import InMemoryMemorySystem
 
 from .cases import MemorySystemTestScenario, build_scenarios
@@ -100,7 +101,19 @@ def _run_scenario(
         chat_client.clear()
         start = time.perf_counter()
         try:
-            result = system.process_turn(turn)
+            prepare = system.prepare_turn(turn)
+            result = system.commit_turn(
+                MemoryTurnCommitInput(
+                    snapshot=prepare.snapshot,
+                    assistant_message=MemoryInputMessage(
+                        id=f"{turn.new_message.id}_assistant",
+                        role="assistant",
+                        content="",
+                        session_id=turn.session_id,
+                        user_id=turn.user_id,
+                    ),
+                )
+            )
             duration = time.perf_counter() - start
             turns.append(
                 TurnRun(
