@@ -18,6 +18,7 @@ from .lookup import (
     NormalizedMemoryLookupResult,
     RepositoryNormalizedMemoryLookup,
 )
+from .ranking import NormalizedMemoryRanker
 from .simple import InMemoryMemoryRetriever, SimpleMemoryContextRenderer
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "NormalizedMemoryLookupHit",
     "NormalizedMemoryLookupRequest",
     "NormalizedMemoryLookupResult",
+    "NormalizedMemoryRanker",
     "NormalizedEventMemoryView",
     "NormalizedMemoryRetriever",
     "RelatedMemory",

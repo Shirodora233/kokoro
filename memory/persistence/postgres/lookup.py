@@ -11,6 +11,7 @@ from ...retrieval.lookup import (
     NormalizedMemoryLookupRequest,
     NormalizedMemoryLookupResult,
 )
+from ...retrieval.ranking import NormalizedMemoryRanker
 from .repository import PostgresPersistentMemoryRepository
 
 
@@ -21,9 +22,11 @@ class PostgresNormalizedMemoryLookup:
         self,
         repository: PostgresPersistentMemoryRepository,
         per_table_limit: int = 20,
+        ranker: NormalizedMemoryRanker | None = None,
     ) -> None:
         self.repository = repository
         self.per_table_limit = per_table_limit
+        self.ranker = ranker or NormalizedMemoryRanker()
 
     def lookup(
         self,
@@ -99,13 +102,14 @@ class PostgresNormalizedMemoryLookup:
                 status_column="status",
             )
         )
-        selected = _dedupe_hits(hits)[:limit]
+        selected = self.ranker.rank(hits, request)[:limit]
         return NormalizedMemoryLookupResult(
             hits=selected,
             metadata={
                 "lookup": "postgres_normalized",
                 "strategy": "lexical",
                 "hit_count": len(selected),
+                "top_score": selected[0].score if selected else None,
                 "query": request.query,
                 "terms": terms,
             },
@@ -140,7 +144,12 @@ class PostgresNormalizedMemoryLookup:
             reverse=True,
         )
         return [
-            _row_to_hit(row, score=0.5, reason="recent_normalized_memory")
+            _row_to_hit(
+                row,
+                score=0.5,
+                reason="recent_normalized_memory",
+                match_quality="recent",
+            )
             for row in rows[:limit]
         ]
 
@@ -168,6 +177,10 @@ class PostgresNormalizedMemoryLookup:
                 %s AS object_type,
                 id AS object_id,
                 {text_expression} AS matched_text,
+                user_id,
+                session_id,
+                confidence,
+                importance,
                 updated_at
             FROM {table}
             WHERE {where_sql}
@@ -182,8 +195,9 @@ class PostgresNormalizedMemoryLookup:
         return [
             _row_to_hit(
                 row,
-                score=_score_match(row["matched_text"], terms, base_score),
+                score=base_score,
                 reason=reason,
+                match_quality=_match_quality(row["matched_text"], terms),
                 terms=terms,
             )
             for row in rows
@@ -207,6 +221,10 @@ class PostgresNormalizedMemoryLookup:
                 %s AS object_type,
                 id AS object_id,
                 {text_expression} AS matched_text,
+                user_id,
+                session_id,
+                confidence,
+                importance,
                 updated_at
             FROM {table}
             WHERE {where_sql}
@@ -237,29 +255,40 @@ def _search_terms(query: str) -> list[str]:
     return [term for term in query.casefold().split() if term]
 
 
-def _score_match(
+def _match_quality(
     text: str | None,
     terms: Sequence[str],
-    base_score: float,
-) -> float:
+) -> str:
     if not text:
-        return base_score
+        return "term"
     normalized = text.casefold()
-    exact_bonus = 0.1 if " ".join(terms) in normalized else 0.0
-    coverage_bonus = min(len(terms), 5) * 0.01
-    return base_score + exact_bonus + coverage_bonus
+    phrase = " ".join(terms)
+    if normalized.strip() == phrase:
+        return "exact"
+    if phrase and phrase in normalized:
+        return "phrase"
+    if terms and all(term in normalized for term in terms):
+        return "all_terms"
+    if terms and any(term in normalized for term in terms):
+        return "term"
+    return "term"
 
 
 def _row_to_hit(
     row: Mapping[str, Any],
     score: float,
     reason: str,
+    match_quality: str,
     terms: Sequence[str] | None = None,
 ) -> NormalizedMemoryLookupHit:
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = {"match_quality": match_quality}
     updated_at = row.get("updated_at")
     if updated_at is not None:
         metadata["updated_at"] = str(updated_at)
+    for key in ("user_id", "session_id", "confidence", "importance"):
+        value = row.get(key)
+        if value is not None:
+            metadata[key] = value
     if terms:
         metadata["terms"] = list(terms)
     return NormalizedMemoryLookupHit(
@@ -272,22 +301,3 @@ def _row_to_hit(
         matched_text=row.get("matched_text"),
         metadata=metadata,
     )
-
-
-def _dedupe_hits(
-    hits: list[NormalizedMemoryLookupHit],
-) -> list[NormalizedMemoryLookupHit]:
-    ranked = sorted(
-        hits,
-        key=lambda item: (
-            item.score,
-            item.metadata.get("updated_at", ""),
-        ),
-        reverse=True,
-    )
-    selected: dict[tuple[str, str], NormalizedMemoryLookupHit] = {}
-    for hit in ranked:
-        key = (hit.object_ref.object_type, hit.object_ref.object_id)
-        if key not in selected:
-            selected[key] = hit
-    return list(selected.values())

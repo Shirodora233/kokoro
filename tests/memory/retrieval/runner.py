@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from memory.models import (
@@ -30,6 +31,7 @@ from memory.retrieval import (
     NormalizedMemoryLookupHit,
     NormalizedMemoryLookupRequest,
     NormalizedMemoryLookupResult,
+    NormalizedMemoryRanker,
     NormalizedMemoryRetriever,
     RelatedMemory,
 )
@@ -54,6 +56,7 @@ def main() -> int:
         test_normalized_retrieval_renders_event_view_without_raw_links,
         test_normalized_retrieval_query_matches_entity_property,
         test_normalized_lookup_hydrates_description_hit_without_recent_pool,
+        test_normalized_ranker_prioritizes_session_high_quality_hit,
     ]
     for test in tests:
         test()
@@ -439,6 +442,54 @@ def test_normalized_lookup_hydrates_description_hit_without_recent_pool() -> Non
     assert "Event: 复诊安排" in content
     assert "Details: 用户计划明天上午十点和林医生复诊，地点在静安门诊。" in content
     assert result.metadata["lookup"]["lookup"] == "static"
+
+
+def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:
+    request = NormalizedMemoryLookupRequest(
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+        query="林医生",
+        limit=4,
+    )
+    ranker = NormalizedMemoryRanker(
+        now=datetime(2026, 5, 27, tzinfo=timezone.utc)
+    )
+    ranked = ranker.rank(
+        [
+            NormalizedMemoryLookupHit(
+                object_ref=PersistentObjectRef("entity", "ent_global"),
+                score=1.0,
+                reason="entity_text_match",
+                matched_text="林医生",
+                metadata={
+                    "match_quality": "phrase",
+                    "importance": "medium",
+                    "confidence": "medium",
+                },
+            ),
+            NormalizedMemoryLookupHit(
+                object_ref=PersistentObjectRef("event", "evt_session"),
+                score=0.95,
+                reason="event_text_match",
+                matched_text="林医生复诊安排",
+                metadata={
+                    "match_quality": "phrase",
+                    "user_id": USER_ID,
+                    "session_id": SESSION_ID,
+                    "importance": "high",
+                    "confidence": "high",
+                    "updated_at": "2026-05-27T00:00:00+00:00",
+                },
+            ),
+        ],
+        request,
+    )
+
+    assert ranked[0].object_ref.object_id == "evt_session"
+    ranking = ranked[0].metadata["ranking"]
+    assert ranking["components"]["scope"] > 0
+    assert ranking["components"]["importance"] > 0
+    assert ranking["components"]["confidence"] > 0
 
 
 def _record(

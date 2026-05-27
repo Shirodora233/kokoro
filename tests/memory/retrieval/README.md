@@ -12,4 +12,4 @@ result labels, grouped results, strict one-hop link expansion, scope filtering,
 unrelated candidates, and normalized event/entity prompt views that hide raw
 link/time-link records. They also cover the normalized lookup boundary, including
 hydrating a description hit back to its parent event without relying on the
-recent event/entity pool.
+recent event/entity pool, plus deterministic ranking rules for lookup hits.

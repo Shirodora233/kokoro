@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from ..persistence import PersistentMemoryRepository
 from ..persistence.models import ObjectType, PersistentObjectRef
+from .ranking import NormalizedMemoryRanker
 
 
 @dataclass(frozen=True)
@@ -53,9 +54,11 @@ class RepositoryNormalizedMemoryLookup:
         self,
         repository: PersistentMemoryRepository,
         pool_limit: int = 40,
+        ranker: NormalizedMemoryRanker | None = None,
     ) -> None:
         self.repository = repository
         self.pool_limit = pool_limit
+        self.ranker = ranker or NormalizedMemoryRanker()
 
     def lookup(
         self,
@@ -89,6 +92,13 @@ class RepositoryNormalizedMemoryLookup:
                         score=0.8,
                         reason="repository_event_match",
                         matched_text=text,
+                        metadata={
+                            "match_quality": _match_quality(text, query),
+                            "user_id": event.user_id,
+                            "session_id": event.session_id,
+                            "importance": event.importance,
+                            "confidence": event.confidence,
+                        },
                     )
                 )
 
@@ -105,6 +115,13 @@ class RepositoryNormalizedMemoryLookup:
                         score=0.75,
                         reason="repository_description_match",
                         matched_text=text,
+                        metadata={
+                            "match_quality": _match_quality(text, query),
+                            "user_id": description.user_id,
+                            "session_id": description.session_id,
+                            "importance": description.importance,
+                            "confidence": description.confidence,
+                        },
                     )
                 )
 
@@ -123,6 +140,13 @@ class RepositoryNormalizedMemoryLookup:
                         score=0.9,
                         reason="repository_entity_match",
                         matched_text=text,
+                        metadata={
+                            "match_quality": _match_quality(text, query),
+                            "user_id": entity.user_id,
+                            "session_id": entity.session_id,
+                            "importance": entity.importance,
+                            "confidence": entity.confidence,
+                        },
                     )
                 )
 
@@ -139,10 +163,17 @@ class RepositoryNormalizedMemoryLookup:
                         score=0.8,
                         reason="repository_property_match",
                         matched_text=text,
+                        metadata={
+                            "match_quality": _match_quality(text, query),
+                            "user_id": memory_property.user_id,
+                            "session_id": memory_property.session_id,
+                            "importance": memory_property.importance,
+                            "confidence": memory_property.confidence,
+                        },
                     )
                 )
 
-        selected = _dedupe_hits(hits)[:limit]
+        selected = self.ranker.rank(hits, request)[:limit]
         return NormalizedMemoryLookupResult(
             hits=selected,
             metadata={
@@ -159,12 +190,14 @@ def _hit(
     score: float,
     reason: str,
     matched_text: str | None,
+    metadata: dict[str, Any] | None = None,
 ) -> NormalizedMemoryLookupHit:
     return NormalizedMemoryLookupHit(
         object_ref=PersistentObjectRef(object_type, object_id),
         score=score,
         reason=reason,
         matched_text=matched_text,
+        metadata=dict(metadata or {}),
     )
 
 
@@ -172,19 +205,21 @@ def _matches_query(text: str, query: str) -> bool:
     return not query or query in text.casefold()
 
 
+def _match_quality(text: str, query: str) -> str:
+    if not query:
+        return "recent"
+    normalized = text.casefold()
+    if normalized.strip() == query:
+        return "exact"
+    if query in normalized:
+        return "phrase"
+    terms = [term for term in query.split() if term]
+    if terms and all(term in normalized for term in terms):
+        return "all_terms"
+    if terms and any(term in normalized for term in terms):
+        return "term"
+    return "term"
+
+
 def _join_text(*values: str | None) -> str:
     return " ".join(value for value in values if value)
-
-
-def _dedupe_hits(
-    hits: list[NormalizedMemoryLookupHit],
-) -> list[NormalizedMemoryLookupHit]:
-    selected: dict[tuple[str, str], NormalizedMemoryLookupHit] = {}
-    order: list[tuple[str, str]] = []
-    for hit in sorted(hits, key=lambda item: item.score, reverse=True):
-        key = (hit.object_ref.object_type, hit.object_ref.object_id)
-        if key in selected:
-            continue
-        selected[key] = hit
-        order.append(key)
-    return [selected[key] for key in order]
