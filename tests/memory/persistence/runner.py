@@ -348,6 +348,10 @@ def test_normalized_retriever_reads_postgres_views(
     assert LINK_ID not in content
     assert TIME_LINK_ID not in content
     assert result.metadata["search"]["strategy"] == "lexical"
+    assert result.metadata["search"]["raw_hit_counts"]["description"] >= 1
+    assert result.metadata["search"]["ranked_hit_count"] >= result.metadata["search"]["hit_count"]
+    assert result.metadata["selected_view_keys"]
+    assert result.metadata["context_block_count"] == 1
     assert any(record.id == EVENT_ID for record in result.records)
 
     entity_result = retriever.retrieve(
@@ -372,6 +376,12 @@ def test_normalized_retriever_reads_postgres_views(
     )
     assert any(
         hit.object_ref.object_id == DESCRIPTION_ID
+        for hit in snapshot_like_search.hits
+    )
+    assert snapshot_like_search.metadata["strategy"] == "lexical"
+    assert snapshot_like_search.metadata["raw_hit_counts"]["description"] >= 1
+    assert any(
+        "ranking" in hit.metadata
         for hit in snapshot_like_search.hits
     )
 

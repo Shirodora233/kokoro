@@ -39,74 +39,80 @@ class PostgresNormalizedMemorySearch:
         query = (request.query or "").strip()
         terms = _search_terms(query)
         if not terms:
-            hits = self.ranker.rank(self._recent_hits(request, limit), request)[:limit]
+            recent_hits = self._recent_hits(request, limit)
+            ranked_hits = self.ranker.rank(recent_hits, request)
+            hits = ranked_hits[:limit]
             return MemorySearchResult(
                 hits=hits,
                 metadata={
                     "search": "postgres_normalized",
                     "strategy": "recent",
                     "hit_count": len(hits),
+                    "raw_hit_count": len(recent_hits),
+                    "ranked_hit_count": len(ranked_hits),
                 },
             )
 
         hits: list[MemorySearchHit] = []
-        hits.extend(
-            self._search_table(
-                table="memory_entities",
-                object_type="entity",
-                text_expression=(
-                    "concat_ws(' ', name, entity_type, identity_summary, aliases::text)"
-                ),
-                base_score=1.0,
-                reason="entity_text_match",
-                request=request,
-                terms=terms,
-                status_column=None,
-            )
+        entity_hits = self._search_table(
+            table="memory_entities",
+            object_type="entity",
+            text_expression=(
+                "concat_ws(' ', name, entity_type, identity_summary, aliases::text)"
+            ),
+            base_score=1.0,
+            reason="entity_text_match",
+            request=request,
+            terms=terms,
+            status_column=None,
         )
-        hits.extend(
-            self._search_table(
-                table="memory_events",
-                object_type="event",
-                text_expression="concat_ws(' ', title, summary, event_type)",
-                base_score=0.95,
-                reason="event_text_match",
-                request=request,
-                terms=terms,
-                status_column="status",
-            )
+        event_hits = self._search_table(
+            table="memory_events",
+            object_type="event",
+            text_expression="concat_ws(' ', title, summary, event_type)",
+            base_score=0.95,
+            reason="event_text_match",
+            request=request,
+            terms=terms,
+            status_column="status",
         )
-        hits.extend(
-            self._search_table(
-                table="memory_properties",
-                object_type="property",
-                text_expression="concat_ws(' ', content, property_type)",
-                base_score=0.9,
-                reason="property_text_match",
-                request=request,
-                terms=terms,
-                status_column="status",
-            )
+        property_hits = self._search_table(
+            table="memory_properties",
+            object_type="property",
+            text_expression="concat_ws(' ', content, property_type)",
+            base_score=0.9,
+            reason="property_text_match",
+            request=request,
+            terms=terms,
+            status_column="status",
         )
-        hits.extend(
-            self._search_table(
-                table="memory_descriptions",
-                object_type="description",
-                text_expression="concat_ws(' ', content, description_type)",
-                base_score=0.85,
-                reason="description_text_match",
-                request=request,
-                terms=terms,
-                status_column="status",
-            )
+        description_hits = self._search_table(
+            table="memory_descriptions",
+            object_type="description",
+            text_expression="concat_ws(' ', content, description_type)",
+            base_score=0.85,
+            reason="description_text_match",
+            request=request,
+            terms=terms,
+            status_column="status",
         )
-        selected = self.ranker.rank(hits, request)[:limit]
+        hits.extend([*entity_hits, *event_hits, *property_hits, *description_hits])
+        ranked_hits = self.ranker.rank(hits, request)
+        selected = ranked_hits[:limit]
         return MemorySearchResult(
             hits=selected,
             metadata={
                 "search": "postgres_normalized",
                 "strategy": "lexical",
                 "hit_count": len(selected),
+                "raw_hit_count": len(hits),
+                "ranked_hit_count": len(ranked_hits),
+                "raw_hit_counts": {
+                    "entity": len(entity_hits),
+                    "event": len(event_hits),
+                    "property": len(property_hits),
+                    "description": len(description_hits),
+                },
                 "top_score": selected[0].score if selected else None,
                 "query": request.query,
                 "terms": terms,

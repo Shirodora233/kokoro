@@ -76,6 +76,13 @@ class NormalizedMemoryContextRetriever:
                 "record_count": len(selected),
                 "event_view_count": len(hydrated.event_views),
                 "entity_view_count": len(hydrated.entity_views),
+                "selected_view_refs": [
+                    {"kind": kind, "id": object_id}
+                    for kind, object_id in hydrated.selected_view_refs
+                ],
+                "selected_view_keys": [view.key for view in selected],
+                "selected_view_kinds": [view.kind for view in selected],
+                "context_block_count": len(context_blocks),
                 "query": request.query,
             },
         )

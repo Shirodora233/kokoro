@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Sequence
 
 from .context import InMemoryActiveMemoryCache, NoopContextPolicy
+from .debug import MemoryDebugRecorder, trace_id_from_metadata, with_debug_trace_metadata
 from .extraction import NoopMemoryExtractor
 from .interfaces import (
     ContextPolicy,
@@ -58,6 +59,7 @@ class InMemoryMemorySystem(MemorySystem):
         persistence_sync: MemoryWriteResultPersistenceSync | None = None,
         active_cache: InMemoryActiveMemoryCache | None = None,
         context_policy: ContextPolicy | None = None,
+        debug_recorder: MemoryDebugRecorder | None = None,
     ) -> None:
         self.store = store or InMemoryMemoryStore()
         self.extractor = extractor or NoopMemoryExtractor()
@@ -72,8 +74,23 @@ class InMemoryMemorySystem(MemorySystem):
             write_applier or InMemoryMemoryWritePlanApplier(self.store)
         )
         self.persistence_sync = persistence_sync
+        self.debug_recorder = debug_recorder
 
     def prepare_turn(self, turn: MemoryTurnInput) -> MemoryTurnPrepareResult:
+        trace_id = self._start_debug_trace(turn)
+        debug_turn = with_debug_trace_metadata(turn, trace_id)
+        try:
+            return self._prepare_turn(debug_turn, trace_id)
+        except Exception as error:
+            if self.debug_recorder is not None:
+                self.debug_recorder.mark_failed(trace_id, error)
+            raise
+
+    def _prepare_turn(
+        self,
+        turn: MemoryTurnInput,
+        trace_id: str | None,
+    ) -> MemoryTurnPrepareResult:
         active_context = turn.active_memory_context or self.active_cache.get(
             user_id=turn.user_id,
             session_id=turn.session_id,
@@ -81,6 +98,11 @@ class InMemoryMemorySystem(MemorySystem):
         enriched_turn = replace(turn, active_memory_context=active_context)
 
         candidate_records = list(self.extractor.extract(enriched_turn))
+        self._record_external_extraction_if_needed(
+            trace_id=trace_id,
+            turn=enriched_turn,
+            records=candidate_records,
+        )
         scoped_records = [
             self._with_turn_scope(record=record, turn=enriched_turn)
             for record in candidate_records
@@ -94,7 +116,10 @@ class InMemoryMemorySystem(MemorySystem):
             candidates=scoped_records,
             active_memory_context=active_context,
             limit=32,
-            metadata={"source": "prepare_turn"},
+            metadata={
+                "source": "prepare_turn",
+                "debug_trace_id": trace_id,
+            },
         )
         search_result = self.context_retriever.search(search_request)
         retrieval_request = MemoryRetrievalRequest(
@@ -105,11 +130,23 @@ class InMemoryMemorySystem(MemorySystem):
             conversation_context=turn.conversation_context,
             active_memory_context=active_context,
             limit=8,
-            metadata={"source": "prepare_turn"},
+            metadata={
+                "source": "prepare_turn",
+                "debug_trace_id": trace_id,
+            },
         )
         retrieval_result = self.context_retriever.retrieve_from_search(
             search_result,
             retrieval_request,
+        )
+        self._record_retrieval_debug(
+            trace_id=trace_id,
+            active_context=active_context,
+            scoped_records=scoped_records,
+            search_request=search_request,
+            search_result=search_result,
+            retrieval_request=retrieval_request,
+            retrieval_result=retrieval_result,
         )
         policy_turn = replace(enriched_turn, active_memory_context=active_context)
         context_actions = list(self.context_policy.plan_actions(policy_turn))
@@ -121,6 +158,7 @@ class InMemoryMemorySystem(MemorySystem):
             active_memory_context=active_context,
             metadata={
                 "source": "prepare_turn",
+                "debug_trace_id": trace_id,
                 "candidate_count": len(scoped_records),
                 "search": search_result.metadata,
                 "retrieval": retrieval_result.metadata,
@@ -265,6 +303,57 @@ class InMemoryMemorySystem(MemorySystem):
         parts.extend(record.text for record in active_context.property_memories)
         parts.extend(record.text for record in active_context.other_memories)
         return " ".join(part.strip() for part in parts if part and part.strip())
+
+    def _start_debug_trace(self, turn: MemoryTurnInput) -> str | None:
+        if self.debug_recorder is None:
+            return trace_id_from_metadata(turn.metadata)
+        return self.debug_recorder.start_turn(turn)
+
+    def _record_external_extraction_if_needed(
+        self,
+        trace_id: str | None,
+        turn: MemoryTurnInput,
+        records: Sequence[MemoryRecord],
+    ) -> None:
+        if self.debug_recorder is None or not trace_id:
+            return
+        trace = self.debug_recorder.get(trace_id)
+        if trace is not None and trace.extraction is not None:
+            return
+        self.debug_recorder.record_extraction(
+            trace_id,
+            turn=turn,
+            parse_status="external",
+            normalized_records=records,
+            metadata={"extractor": self.extractor.__class__.__name__},
+        )
+
+    def _record_retrieval_debug(
+        self,
+        trace_id: str | None,
+        active_context: ActiveMemoryContext,
+        scoped_records: Sequence[MemoryRecord],
+        search_request: MemorySearchRequest,
+        search_result,
+        retrieval_request: MemoryRetrievalRequest,
+        retrieval_result: MemoryRetrievalResult,
+    ) -> None:
+        if self.debug_recorder is None:
+            return
+        self.debug_recorder.record_retrieval(
+            trace_id,
+            active_memory_context=active_context,
+            scoped_candidates=scoped_records,
+            search_request=search_request,
+            search_result=search_result,
+            retrieval_request=retrieval_request,
+            retrieval_result=retrieval_result,
+            metadata={
+                "context_retriever": self.context_retriever.__class__.__name__,
+                "search_hit_count": len(search_result.hits),
+                "memory_context_count": len(retrieval_result.memory_context),
+            },
+        )
 
     def _sync_persistent_memory(
         self,

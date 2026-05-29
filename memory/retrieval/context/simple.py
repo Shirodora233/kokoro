@@ -65,6 +65,7 @@ class SimpleMemoryContextRetriever:
             session_id=request.session_id,
         )
         records = self._dedupe([*active_records, *stored_records])
+        deduped_count = len(records)
 
         if request.query:
             records = [
@@ -72,6 +73,7 @@ class SimpleMemoryContextRetriever:
                 for record in records
                 if self._matches_query(record, request.query)
             ]
+        matched_count = len(records)
 
         limit = max(0, request.limit)
         hits = [
@@ -91,8 +93,14 @@ class SimpleMemoryContextRetriever:
             metadata={
                 "search": "simple_store_context",
                 "store": self.store.__class__.__name__,
+                "query": request.query,
+                "limit": limit,
+                "active_record_count": len(active_records),
+                "stored_record_count": len(stored_records),
+                "deduped_record_count": deduped_count,
+                "matched_record_count": matched_count,
                 "hit_count": len(hits),
-                "total_candidates": len(records),
+                "hit_ids": [hit.object_ref.object_id for hit in hits],
             },
         )
 
@@ -115,6 +123,10 @@ class SimpleMemoryContextRetriever:
                 "retriever": "simple_store_context",
                 "store": self.store.__class__.__name__,
                 "record_count": len(selected_records),
+                "context_block_count": len(context_blocks),
+                "selected_record_ids": [
+                    record.id for record in selected_records if record.id
+                ],
                 "search": search_result.metadata,
             },
         )

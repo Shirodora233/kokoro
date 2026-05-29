@@ -14,6 +14,8 @@ from memory import (
     ConversationContextState,
     LLMMemoryExtractor,
     MemoryContextBlock,
+    MemoryDebugRecorder,
+    MemoryDebugService,
     MemoryExtractionPromptBuilder,
     MemoryInputMessage,
     MemoryContextRetriever,
@@ -48,6 +50,7 @@ class ConversationService:
         chat_client: ChatClient,
         config: LLMConfig,
         memory_system: MemorySystem | None = None,
+        memory_debug_service: MemoryDebugService | None = None,
         timezone: str = "UTC",
     ) -> None:
         self.store = store
@@ -55,6 +58,10 @@ class ConversationService:
         self.config = config
         self.sessions = SessionManager(store)
         self.memory_system = memory_system or InMemoryMemorySystem()
+        self.memory_debug_service = (
+            memory_debug_service
+            or self._default_memory_debug_service(self.memory_system)
+        )
         self.timezone = timezone
 
     @classmethod
@@ -70,6 +77,7 @@ class ConversationService:
         memory_store: MemoryStore | None = None
         memory_context_retriever: MemoryContextRetriever | None = None
         persistence_sync: MemoryWriteResultPersistenceSync | None = None
+        persistent_repository = None
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
             from memory.persistence.postgres import (
@@ -92,32 +100,43 @@ class ConversationService:
         else:
             store = JsonConversationStore(data_dir or default_data_dir())
         chat_client = OpenAIChatClient(config)
+        debug_recorder = MemoryDebugRecorder(
+            enabled=memory_config.debug_enabled,
+            max_traces=memory_config.debug_max_traces,
+            max_raw_chars=memory_config.debug_max_raw_chars,
+        )
+        extractor = None
+        if memory_config.extraction_enabled:
+            extractor = LLMMemoryExtractor(
+                chat_client=chat_client,
+                model=memory_config.extraction_model or config.model,
+                temperature=memory_config.extraction_temperature,
+                prompt_builder=MemoryExtractionPromptBuilder(
+                    max_context_messages=(
+                        memory_config.extraction_max_context_messages
+                    ),
+                ),
+                debug_recorder=debug_recorder,
+            )
         memory_system = InMemoryMemorySystem(
             store=memory_store,
             context_retriever=memory_context_retriever,
             persistence_sync=persistence_sync,
+            extractor=extractor,
+            debug_recorder=debug_recorder,
         )
-        if memory_config.extraction_enabled:
-            memory_system = InMemoryMemorySystem(
-                store=memory_store,
-                context_retriever=memory_context_retriever,
-                persistence_sync=persistence_sync,
-                extractor=LLMMemoryExtractor(
-                    chat_client=chat_client,
-                    model=memory_config.extraction_model or config.model,
-                    temperature=memory_config.extraction_temperature,
-                    prompt_builder=MemoryExtractionPromptBuilder(
-                        max_context_messages=(
-                            memory_config.extraction_max_context_messages
-                        ),
-                    ),
-                )
-            )
+        memory_debug_service = MemoryDebugService(
+            recorder=debug_recorder,
+            memory_store=memory_system.store,
+            active_cache=memory_system.active_cache,
+            persistent_repository=persistent_repository,
+        )
         return cls(
             store=store,
             chat_client=chat_client,
             config=config,
             memory_system=memory_system,
+            memory_debug_service=memory_debug_service,
             timezone=runtime_config.timezone,
         )
 
@@ -290,6 +309,56 @@ class ConversationService:
             page_size=page_size,
         )
 
+    def get_memory_debug_snapshot(
+        self,
+        username: str | None = None,
+        session_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        user_id = self._debug_user_id(username=username, session_id=session_id)
+        return self.memory_debug_service.memory_snapshot(
+            user_id=user_id,
+            session_id=session_id,
+            limit=limit,
+        )
+
+    def list_memory_debug_traces(
+        self,
+        session_id: str | None = None,
+        message_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        return self.memory_debug_service.trace_summaries(
+            session_id=session_id,
+            message_id=message_id,
+            limit=limit,
+        )
+
+    def get_memory_debug_trace(
+        self,
+        trace_id: str,
+        include_raw: bool = False,
+    ) -> dict[str, Any]:
+        trace = self.memory_debug_service.trace(
+            trace_id,
+            include_raw=include_raw,
+        )
+        if trace is None:
+            raise ValueError(f"Unknown memory debug trace: {trace_id}")
+        return trace
+
+    def memory_debug_trace_for_message(
+        self,
+        session_id: str,
+        message_id: str,
+    ) -> dict[str, Any] | None:
+        traces = self.list_memory_debug_traces(
+            session_id=session_id,
+            message_id=message_id,
+            limit=1,
+        )
+        return traces[0] if traces else None
+
     def _prepare_memory_turn(
         self,
         session: ChatSession,
@@ -417,3 +486,34 @@ class ConversationService:
         if session.archived_at and not allow_archived:
             raise ValueError(f"Session is archived: {session_id}")
         return session
+
+    def _debug_user_id(
+        self,
+        username: str | None,
+        session_id: str | None,
+    ) -> str | None:
+        user_id = None
+        if username:
+            user = self.store.find_user_by_username(username)
+            if not user:
+                raise ValueError(f"Unknown username: {username}")
+            user_id = user.id
+        if session_id:
+            session = self._require_session(session_id, allow_archived=True)
+            if user_id is not None and session.user_id != user_id:
+                raise ValueError("session_id does not belong to username")
+            user_id = user_id or session.user_id
+        return user_id
+
+    def _default_memory_debug_service(
+        self,
+        memory_system: MemorySystem,
+    ) -> MemoryDebugService:
+        recorder = getattr(memory_system, "debug_recorder", None)
+        if recorder is None:
+            recorder = MemoryDebugRecorder(enabled=False)
+        return MemoryDebugService(
+            recorder=recorder,
+            memory_store=getattr(memory_system, "store", None),
+            active_cache=getattr(memory_system, "active_cache", None),
+        )

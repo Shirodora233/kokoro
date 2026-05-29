@@ -43,6 +43,9 @@ class MemoryRuntimeConfig:
     extraction_model: str | None = None
     extraction_temperature: float = 0.0
     extraction_max_context_messages: int = 20
+    debug_enabled: bool = True
+    debug_max_traces: int = 50
+    debug_max_raw_chars: int = 200_000
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> "MemoryRuntimeConfig":
@@ -57,9 +60,17 @@ class MemoryRuntimeConfig:
         max_context_messages = int(
             read("MEMORY_EXTRACTION_MAX_CONTEXT_MESSAGES", "20") or "20"
         )
+        debug_enabled = _parse_bool(read("MEMORY_DEBUG_ENABLED"), default=True)
+        debug_max_traces = int(read("MEMORY_DEBUG_MAX_TRACES", "50") or "50")
+        debug_max_raw_chars = int(
+            read("MEMORY_DEBUG_MAX_RAW_CHARS", "200000") or "200000"
+        )
         return cls(
             extraction_enabled=enabled,
             extraction_model=model,
             extraction_temperature=temperature,
             extraction_max_context_messages=max_context_messages,
+            debug_enabled=debug_enabled,
+            debug_max_traces=debug_max_traces,
+            debug_max_raw_chars=debug_max_raw_chars,
         )

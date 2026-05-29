@@ -47,6 +47,12 @@ class FallbackNormalizedMemorySearch:
 
         query = (request.query or "").casefold().strip()
         hits: list[MemorySearchHit] = []
+        raw_hit_counts = {
+            "event": 0,
+            "description": 0,
+            "entity": 0,
+            "property": 0,
+        }
         events = self.repository.list_events(
             user_id=request.user_id,
             session_id=request.session_id,
@@ -60,6 +66,7 @@ class FallbackNormalizedMemorySearch:
         for event in events:
             text = _join_text(event.title, event.summary, event.event_type)
             if event.id and _matches_query(text, query):
+                raw_hit_counts["event"] += 1
                 hits.append(
                     _hit(
                         object_type="event",
@@ -83,6 +90,7 @@ class FallbackNormalizedMemorySearch:
         for description in descriptions:
             text = _join_text(description.content, description.description_type)
             if description.id and _matches_query(text, query):
+                raw_hit_counts["description"] += 1
                 hits.append(
                     _hit(
                         object_type="description",
@@ -108,6 +116,7 @@ class FallbackNormalizedMemorySearch:
                 *entity.aliases,
             )
             if entity.id and _matches_query(text, query):
+                raw_hit_counts["entity"] += 1
                 hits.append(
                     _hit(
                         object_type="entity",
@@ -131,6 +140,7 @@ class FallbackNormalizedMemorySearch:
         for memory_property in properties:
             text = _join_text(memory_property.content, memory_property.property_type)
             if memory_property.id and _matches_query(text, query):
+                raw_hit_counts["property"] += 1
                 hits.append(
                     _hit(
                         object_type="property",
@@ -148,12 +158,16 @@ class FallbackNormalizedMemorySearch:
                     )
                 )
 
-        selected = self.ranker.rank(hits, request)[:limit]
+        ranked = self.ranker.rank(hits, request)
+        selected = ranked[:limit]
         return MemorySearchResult(
             hits=selected,
             metadata={
                 "search": "fallback_normalized",
                 "hit_count": len(selected),
+                "raw_hit_count": len(hits),
+                "ranked_hit_count": len(ranked),
+                "raw_hit_counts": raw_hit_counts,
                 "query": request.query,
             },
         )

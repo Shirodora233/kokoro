@@ -398,6 +398,11 @@ def test_normalized_retrieval_renders_event_view_without_raw_links() -> None:
     assert "link_visit_doctor" not in content
     assert "tlink_visit_time" not in content
     assert all(record.metadata["normalized"] for record in result.records)
+    assert result.metadata["search"]["raw_hit_counts"]["event"] >= 1
+    assert result.metadata["search"]["ranked_hit_count"] >= result.metadata["search"]["hit_count"]
+    assert result.metadata["event_view_count"] >= 1
+    assert result.metadata["selected_view_keys"]
+    assert result.metadata["context_block_count"] == 1
 
 
 def test_normalized_retrieval_query_matches_entity_property() -> None:
@@ -443,6 +448,10 @@ def test_normalized_search_hydrates_description_hit_without_recent_pool() -> Non
     assert "Event: 复诊安排" in content
     assert "Details: 用户计划明天上午十点和林医生复诊，地点在静安门诊。" in content
     assert result.metadata["search"]["search"] == "static"
+    assert result.metadata["selected_view_refs"] == [
+        {"kind": "event", "id": "evt_visit"}
+    ]
+    assert result.metadata["selected_view_kinds"] == ["event"]
 
 
 def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:

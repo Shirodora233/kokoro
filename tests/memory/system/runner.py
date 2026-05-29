@@ -11,6 +11,7 @@ from conversation.service import ConversationService
 from conversation.storage import JsonConversationStore
 from llm.config import LLMConfig
 from llm.interfaces import ChatCompletionResult, ChatMessageParam
+from memory import LLMMemoryExtractor, MemoryDebugRecorder, MemoryDebugService
 from memory.models import (
     MemoryContextBlock,
     MemoryInputMessage,
@@ -25,6 +26,7 @@ from memory.models import (
 )
 from memory.system import InMemoryMemorySystem
 from memory.writing import MemoryWriteResult
+from web_frontend.server import KokoroRequestHandler
 
 from .fixtures import (
     SESSION_ID,
@@ -46,6 +48,12 @@ def main() -> int:
         test_commit_turn_reuses_prepare_snapshot,
         test_commit_turn_invokes_persistence_sync,
         test_conversation_send_message_prepares_before_llm_and_commits_after,
+        test_llm_extraction_debug_records_raw_and_normalized_candidates,
+        test_llm_extraction_debug_marks_raw_truncation,
+        test_llm_extraction_debug_records_parse_error,
+        test_llm_extraction_debug_records_validation_errors,
+        test_prepare_turn_debug_records_simple_retrieval,
+        test_web_debug_api_returns_memory_and_traces_without_raw_by_default,
     ]
     for test in tests:
         test()
@@ -256,6 +264,191 @@ def test_conversation_send_message_prepares_before_llm_and_commits_after() -> No
     assert memory_system.commit_input.assistant_message.role == "assistant"
 
 
+def test_llm_extraction_debug_records_raw_and_normalized_candidates() -> None:
+    recorder = MemoryDebugRecorder(max_raw_chars=10_000)
+    system = _llm_debug_system(_valid_extraction_json(), recorder)
+
+    prepare = system.prepare_turn(make_turn("msg_debug", "茉莉花茶少糖。"))
+
+    trace_id = prepare.metadata["debug_trace_id"]
+    trace = recorder.get(trace_id)
+    assert trace is not None
+    default_payload = trace.to_record()
+    raw_payload = trace.to_record(include_raw=True)
+    extraction = default_payload["extraction"]
+
+    assert default_payload["status"] == "prepared"
+    assert extraction["parse_status"] == "ok"
+    assert extraction["parsed_candidate_counts"]["entities"] == 1
+    assert extraction["validated_candidate_counts"]["properties"] == 1
+    assert extraction["validation_errors"] == []
+    assert "prompt_messages" not in extraction
+    assert "raw_output" not in extraction
+    assert extraction["raw"]["available"] is True
+    assert raw_payload["extraction"]["raw_output"]
+    assert raw_payload["extraction"]["prompt_messages"]
+    assert any(
+        record["text"] == "茉莉花茶"
+        for record in extraction["normalized_records"]
+    )
+    assert any(
+        record["text"] == "用户偏好茉莉花茶少糖"
+        for record in extraction["normalized_records"]
+    )
+
+
+def test_llm_extraction_debug_marks_raw_truncation() -> None:
+    recorder = MemoryDebugRecorder(max_raw_chars=12)
+    system = _llm_debug_system(_valid_extraction_json(), recorder)
+
+    prepare = system.prepare_turn(make_turn("msg_debug_truncated", "茉莉花茶少糖。"))
+
+    trace = recorder.get(prepare.metadata["debug_trace_id"])
+    assert trace is not None
+    payload = trace.to_record(include_raw=True)
+    extraction = payload["extraction"]
+
+    assert payload["metadata"]["truncated"] is True
+    assert extraction["metadata"]["truncated"] is True
+    assert extraction["raw"]["prompt_truncated"] is True
+    assert extraction["raw"]["output_truncated"] is True
+    assert len(extraction["raw_output"]) <= 12
+    assert all(
+        len(message["content"]) <= 12
+        for message in extraction["prompt_messages"]
+    )
+
+
+def test_llm_extraction_debug_records_parse_error() -> None:
+    recorder = MemoryDebugRecorder()
+    system = _llm_debug_system("this is not json", recorder)
+
+    prepare = system.prepare_turn(make_turn("msg_bad_json", "只是测试。"))
+
+    trace = recorder.get(prepare.metadata["debug_trace_id"])
+    assert trace is not None
+    extraction = trace.to_record()["extraction"]
+    assert extraction["parse_status"] == "error"
+    assert extraction["parse_error"]
+    assert extraction["normalized_records"] == []
+
+
+def test_llm_extraction_debug_records_validation_errors() -> None:
+    recorder = MemoryDebugRecorder()
+    system = _llm_debug_system(_invalid_event_extraction_json(), recorder)
+
+    prepare = system.prepare_turn(make_turn("msg_invalid_event", "明天有安排。"))
+
+    trace = recorder.get(prepare.metadata["debug_trace_id"])
+    assert trace is not None
+    extraction = trace.to_record()["extraction"]
+    assert extraction["parse_status"] == "ok"
+    assert extraction["validation_errors"]
+    assert extraction["dropped_candidate_counts"]["events"] == 1
+    assert extraction["normalized_records"] == []
+
+
+def test_prepare_turn_debug_records_simple_retrieval() -> None:
+    recorder = MemoryDebugRecorder()
+    system = InMemoryMemorySystem(
+        extractor=SequenceMemoryExtractor(
+            [[candidate("entity", "茉莉花茶", "cand_tea_again")]]
+        ),
+        debug_recorder=recorder,
+    )
+    stored = system.seed_records(
+        [candidate("entity", "茉莉花茶", "seed_tea")]
+    )[0]
+
+    prepare = system.prepare_turn(make_turn("msg_retrieve_debug", "茉莉花茶少糖。"))
+
+    trace = recorder.get(prepare.metadata["debug_trace_id"])
+    assert trace is not None
+    retrieval = trace.to_record()["retrieval"]
+    search_metadata = retrieval["search_result"]["metadata"]
+    first_hit = retrieval["search_result"]["hits"][0]
+
+    assert search_metadata["search"] == "simple_store_context"
+    assert search_metadata["stored_record_count"] == 1
+    assert search_metadata["deduped_record_count"] == 1
+    assert search_metadata["matched_record_count"] == 1
+    assert search_metadata["hit_ids"] == [stored.id]
+    assert first_hit["score"] == 1.0
+    assert first_hit["reason"] == "store_text_match"
+    assert retrieval["retrieval_result"]["metadata"]["context_block_count"] == 1
+    assert retrieval["memory_context"]
+
+
+def test_web_debug_api_returns_memory_and_traces_without_raw_by_default() -> None:
+    recorder = MemoryDebugRecorder(max_raw_chars=10_000)
+    extraction_chat_client = _StaticChatClient(_valid_extraction_json())
+    memory_system = InMemoryMemorySystem(
+        extractor=LLMMemoryExtractor(
+            chat_client=extraction_chat_client,  # type: ignore[arg-type]
+            debug_recorder=recorder,
+        ),
+        debug_recorder=recorder,
+    )
+    chat_client = _StaticChatClient("好的。")
+
+    with TemporaryDirectory() as data_dir:
+        store = JsonConversationStore(data_dir)
+        service = ConversationService(
+            store=store,
+            chat_client=chat_client,  # type: ignore[arg-type]
+            config=LLMConfig(
+                api_key="test-key",
+                base_url=None,
+                model="test-model",
+            ),
+            memory_system=memory_system,
+            memory_debug_service=MemoryDebugService(
+                recorder=recorder,
+                memory_store=memory_system.store,
+                active_cache=memory_system.active_cache,
+            ),
+            timezone=TIMEZONE,
+        )
+        user = service.create_user("alice")
+        session = service.start_session(user.id)
+        handler = object.__new__(KokoroRequestHandler)
+        handler.service = service
+
+        response = handler._route_api(
+            "POST",
+            f"/api/sessions/{session.id}/messages",
+            {"debug": ["true"]},
+            {"content": "茉莉花茶少糖。"},
+        )
+        trace_id = response["memory_debug_trace_id"]
+        trace_response = handler._route_api(
+            "GET",
+            f"/api/debug/memory/traces/{trace_id}",
+            {},
+            {},
+        )
+        raw_trace_response = handler._route_api(
+            "GET",
+            f"/api/debug/memory/traces/{trace_id}",
+            {"include_raw": ["1"]},
+            {},
+        )
+        memory_response = handler._route_api(
+            "GET",
+            "/api/debug/memory",
+            {"session_id": [session.id], "limit": ["20"]},
+            {},
+        )
+
+    assert trace_id
+    assert response["memory_debug_trace"]["trace_id"] == trace_id
+    assert "raw_output" not in trace_response["trace"]["extraction"]
+    assert "prompt_messages" not in trace_response["trace"]["extraction"]
+    assert raw_trace_response["trace"]["extraction"]["raw_output"]
+    assert memory_response["memory"]["generic_memories"]
+    assert memory_response["memory"]["active_memory_context"] is not None
+
+
 @dataclass
 class _CapturedSyncResult:
     created_count: int
@@ -328,6 +521,83 @@ class _RecordingChatClient:
             usage={"total_tokens": 1},
             provider_message_id="provider_test",
         )
+
+
+class _StaticChatClient:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.messages: list[ChatMessageParam] | None = None
+
+    def complete(
+        self,
+        messages: list[ChatMessageParam],
+        model: str | None = None,
+        temperature: float | None = None,
+    ) -> ChatCompletionResult:
+        self.messages = messages
+        return ChatCompletionResult(
+            content=self.content,
+            model=model or "test-model",
+            usage={"total_tokens": 1},
+            provider_message_id="provider_static",
+        )
+
+
+def _llm_debug_system(
+    extraction_response: str,
+    recorder: MemoryDebugRecorder,
+) -> InMemoryMemorySystem:
+    chat_client = _StaticChatClient(extraction_response)
+    return InMemoryMemorySystem(
+        extractor=LLMMemoryExtractor(
+            chat_client=chat_client,  # type: ignore[arg-type]
+            debug_recorder=recorder,
+        ),
+        debug_recorder=recorder,
+    )
+
+
+def _valid_extraction_json() -> str:
+    return """
+{
+  "event_candidates": [],
+  "entity_candidates": [
+    {
+      "client_id": "entity_tea",
+      "name": "茉莉花茶",
+      "entity_type": "object",
+      "identity_summary": "用户提到的茶饮",
+      "properties": [
+        {
+          "client_id": "prop_tea_less_sugar",
+          "text": "用户偏好茉莉花茶少糖",
+          "property_type": "preference",
+          "source_message_ids": ["msg_debug"],
+          "source_quote": "茉莉花茶少糖"
+        }
+      ],
+      "source_message_ids": ["msg_debug"],
+      "source_quote": "茉莉花茶"
+    }
+  ]
+}
+"""
+
+
+def _invalid_event_extraction_json() -> str:
+    return """
+{
+  "event_candidates": [
+    {
+      "client_id": "event_without_description",
+      "title": "明天安排",
+      "event_type": "plan",
+      "descriptions": []
+    }
+  ],
+  "entity_candidates": []
+}
+"""
 
 
 def _prepare_and_commit(

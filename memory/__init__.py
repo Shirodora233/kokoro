@@ -1,7 +1,16 @@
 """Memory system contracts."""
 
 from .config import MemoryRuntimeConfig
+from .debug import (
+    DEBUG_TRACE_ID_KEY,
+    ExtractionDebugInfo,
+    MemoryDebugRecorder,
+    MemoryDebugService,
+    MemoryDebugTrace,
+    RetrievalDebugInfo,
+)
 from .extraction import (
+    LLMMemoryExtractionCallResult,
     LLMMemoryExtractionClient,
     LLMMemoryExtractor,
     MemoryCandidateValidator,
@@ -102,6 +111,8 @@ __all__ = [
     "ContextPolicy",
     "ConversationContextState",
     "DeterministicMemoryReconciler",
+    "DEBUG_TRACE_ID_KEY",
+    "ExtractionDebugInfo",
     "Importance",
     "MemoryContextBlock",
     "MemoryContextRenderer",
@@ -140,7 +151,11 @@ __all__ = [
     "InMemoryMemorySystem",
     "InMemoryMemoryWritePlanApplier",
     "LLMMemoryExtractionClient",
+    "LLMMemoryExtractionCallResult",
     "LLMMemoryExtractor",
+    "MemoryDebugRecorder",
+    "MemoryDebugService",
+    "MemoryDebugTrace",
     "NoopMemorySystem",
     "NormalizedEntityMemoryView",
     "NormalizedEventMemoryView",
@@ -164,6 +179,7 @@ __all__ = [
     "ReconciliationConfidence",
     "ReconciliationEvidence",
     "RelatedMemory",
+    "RetrievalDebugInfo",
     "PostgresNormalizedMemorySearch",
     "SimpleMemoryContextRetriever",
     "TimeCertainty",

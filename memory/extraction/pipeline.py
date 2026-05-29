@@ -7,8 +7,9 @@ from typing import Sequence
 
 from llm.interfaces import ChatClient
 
+from ..debug import MemoryDebugRecorder, trace_id_from_metadata
 from ..models import MemoryRecord, MemoryTurnInput
-from .llm import LLMMemoryExtractionClient
+from .llm import LLMMemoryExtractionCallResult, LLMMemoryExtractionClient
 from .normalizer import MemoryCandidateNormalizer
 from .parser import MemoryExtractionParseError, parse_extraction_response
 from .prompt import MemoryExtractionPromptBuilder
@@ -29,6 +30,7 @@ class LLMMemoryExtractor:
         llm_client: LLMMemoryExtractionClient | None = None,
         normalizer: MemoryCandidateNormalizer | None = None,
         validator: MemoryCandidateValidator | None = None,
+        debug_recorder: MemoryDebugRecorder | None = None,
     ) -> None:
         if llm_client is None and chat_client is None:
             raise ValueError("chat_client or llm_client is required")
@@ -40,15 +42,77 @@ class LLMMemoryExtractor:
         )
         self.normalizer = normalizer or MemoryCandidateNormalizer()
         self.validator = validator or MemoryCandidateValidator()
+        self.debug_recorder = debug_recorder
 
     def extract(self, turn: MemoryTurnInput) -> Sequence[MemoryRecord]:
-        response_text = self.llm_client.extract_text(turn)
+        trace_id = trace_id_from_metadata(turn.metadata)
+        call_result = self._extract_call(turn)
+        response_text = call_result.raw_output
         try:
             candidates = parse_extraction_response(response_text)
         except MemoryExtractionParseError as error:
             LOGGER.warning("Failed to parse memory extraction response: %s", error)
+            self._record_debug(
+                trace_id=trace_id,
+                turn=turn,
+                call_result=call_result,
+                parse_status="error",
+                parse_error=str(error),
+            )
             return []
         validation_result = self.validator.validate(candidates)
         for error in validation_result.errors:
             LOGGER.info("Dropped invalid memory candidate: %s", error)
-        return self.normalizer.normalize(validation_result.batch, turn)
+        records = self.normalizer.normalize(validation_result.batch, turn)
+        self._record_debug(
+            trace_id=trace_id,
+            turn=turn,
+            call_result=call_result,
+            parse_status="ok",
+            parsed_batch=candidates,
+            validated_batch=validation_result.batch,
+            validation_errors=validation_result.errors,
+            normalized_records=records,
+        )
+        return records
+
+    def _extract_call(self, turn: MemoryTurnInput) -> LLMMemoryExtractionCallResult:
+        if hasattr(self.llm_client, "extract"):
+            return self.llm_client.extract(turn)
+        response_text = self.llm_client.extract_text(turn)
+        return LLMMemoryExtractionCallResult(
+            prompt_messages=[],
+            raw_output=response_text,
+        )
+
+    def _record_debug(
+        self,
+        trace_id: str | None,
+        turn: MemoryTurnInput,
+        call_result: LLMMemoryExtractionCallResult,
+        parse_status: str,
+        parse_error: str | None = None,
+        parsed_batch=None,
+        validated_batch=None,
+        validation_errors: Sequence[str] = (),
+        normalized_records: Sequence[MemoryRecord] = (),
+    ) -> None:
+        if self.debug_recorder is None:
+            return
+        self.debug_recorder.record_extraction(
+            trace_id,
+            turn=turn,
+            prompt_messages=call_result.prompt_messages,
+            raw_output=call_result.raw_output,
+            parse_status=parse_status,
+            parse_error=parse_error,
+            parsed_batch=parsed_batch,
+            validated_batch=validated_batch,
+            validation_errors=validation_errors,
+            normalized_records=normalized_records,
+            metadata={
+                "llm_model": call_result.model,
+                "provider_message_id": call_result.provider_message_id,
+                "usage": call_result.usage,
+            },
+        )

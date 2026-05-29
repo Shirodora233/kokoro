@@ -72,6 +72,34 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/health":
             return {"ok": True}
 
+        if method == "GET" and path == "/api/debug/memory":
+            return {
+                "memory": self.service.get_memory_debug_snapshot(
+                    username=self._query_one(query, "username"),
+                    session_id=self._query_one(query, "session_id"),
+                    limit=self._query_int(query, "limit", 100),
+                )
+            }
+
+        if method == "GET" and path == "/api/debug/memory/traces":
+            return {
+                "traces": self.service.list_memory_debug_traces(
+                    session_id=self._query_one(query, "session_id"),
+                    message_id=self._query_one(query, "message_id"),
+                    limit=self._query_int(query, "limit", 20),
+                )
+            }
+
+        trace_prefix = "/api/debug/memory/traces/"
+        if method == "GET" and path.startswith(trace_prefix):
+            trace_id = unquote(path.removeprefix(trace_prefix))
+            return {
+                "trace": self.service.get_memory_debug_trace(
+                    trace_id,
+                    include_raw=self._query_bool(query, "include_raw"),
+                )
+            }
+
         if method == "GET" and path == "/api/users":
             return {"users": [user.to_record() for user in self.service.list_users()]}
 
@@ -162,6 +190,10 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[1] == "messages" and method == "POST":
                 content = self._require_text(payload, "content")
                 username = self._optional_text(payload, "username")
+                include_debug = (
+                    self._query_bool(query, "debug")
+                    or self._payload_bool(payload, "debug")
+                )
                 user_id = None
                 if username:
                     user = self.service.create_user(username)
@@ -171,10 +203,20 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                     content=content,
                     user_id=user_id,
                 )
-                return {
+                response = {
                     "user_message": user_message.to_record(),
                     "assistant_message": assistant_message.to_record(),
                 }
+                if include_debug:
+                    trace = self.service.memory_debug_trace_for_message(
+                        session_id=session_id,
+                        message_id=user_message.id,
+                    )
+                    response["memory_debug_trace"] = trace
+                    response["memory_debug_trace_id"] = (
+                        trace.get("trace_id") if trace else None
+                    )
+                return response
 
         raise ValueError(f"Unsupported route: {method} {path}")
 
@@ -237,6 +279,14 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
     def _query_bool(self, query: dict[str, list[str]], key: str) -> bool:
         value = (self._query_one(query, key) or "").lower()
         return value in {"1", "true", "yes", "on"}
+
+    def _payload_bool(self, payload: dict[str, Any], key: str) -> bool:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     def _query_int(
         self,
