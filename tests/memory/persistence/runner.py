@@ -40,8 +40,10 @@ DESCRIPTION_ID = "desc_persistence_test"
 ENTITY_ID = "ent_persistence_test"
 PROPERTY_ID = "prop_persistence_test"
 LINK_ID = "link_persistence_test"
+LINK_DUP_ID = "link_persistence_test_dup"
 TIME_REF_ID = "time_persistence_test"
 TIME_LINK_ID = "tlink_persistence_test"
+TIME_LINK_DUP_ID = "tlink_persistence_test_dup"
 
 ALL_IDS = [
     EVENT_ID,
@@ -59,6 +61,7 @@ def main() -> int:
     repository = PostgresPersistentMemoryRepository(config.database_url)
     tests = [
         test_save_and_load_bundle,
+        test_duplicate_natural_links_are_idempotent,
         test_sync_write_result_to_persistent_bundle,
         test_normalized_retriever_reads_postgres_views,
     ]
@@ -198,6 +201,84 @@ def test_save_and_load_bundle(
     assert time_link is not None and time_link.target_ref.object_id == EVENT_ID
     assert any(item.id == EVENT_ID for item in listed_events)
     assert any(item.id == ENTITY_ID for item in listed_entities)
+
+
+def test_duplicate_natural_links_are_idempotent(
+    repository: PostgresPersistentMemoryRepository,
+) -> None:
+    source = PersistentSourceRef(source_type="message", source_id=MESSAGE_ID)
+    bundle = PersistentMemoryBundle(
+        events=[
+            PersistentEvent(
+                id=EVENT_ID,
+                title="打抛饭经历",
+                user_id=USER_ID,
+                session_id=SESSION_ID,
+            )
+        ],
+        entities=[
+            PersistentEntity(
+                id=ENTITY_ID,
+                name="打抛饭",
+                entity_type="concept",
+                user_id=USER_ID,
+                session_id=SESSION_ID,
+            )
+        ],
+        time_refs=[
+            PersistentTimeRef(
+                id=TIME_REF_ID,
+                raw_text="前几天",
+                time_kind="vague",
+                timeline_kind="real_world",
+                certainty="vague",
+                anchor_timezone="Asia/Shanghai",
+                anchor_utc_offset="+08:00",
+                description="前几天",
+            )
+        ],
+        links=[
+            PersistentLink(
+                id=LINK_ID,
+                from_ref=PersistentObjectRef("event", EVENT_ID),
+                to_ref=PersistentObjectRef("entity", ENTITY_ID),
+                relation_type="involves",
+                source_refs=[source],
+            ),
+            PersistentLink(
+                id=LINK_DUP_ID,
+                from_ref=PersistentObjectRef("event", EVENT_ID),
+                to_ref=PersistentObjectRef("entity", ENTITY_ID),
+                relation_type="involves",
+                source_refs=[source],
+            ),
+        ],
+        time_links=[
+            PersistentTimeLink(
+                id=TIME_LINK_ID,
+                target_ref=PersistentObjectRef("event", EVENT_ID),
+                time_ref_id=TIME_REF_ID,
+                time_role="occurred_at",
+                source_refs=[source],
+            ),
+            PersistentTimeLink(
+                id=TIME_LINK_DUP_ID,
+                target_ref=PersistentObjectRef("event", EVENT_ID),
+                time_ref_id=TIME_REF_ID,
+                time_role="occurred_at",
+                source_refs=[source],
+            ),
+        ],
+    )
+
+    stored = repository.save_bundle(bundle)
+
+    assert len({link.id for link in stored.links}) == 1
+    assert len({time_link.id for time_link in stored.time_links}) == 1
+    assert repository.get_link(LINK_ID) is not None
+    assert repository.get_link(LINK_DUP_ID) is None
+    assert repository.get_time_link(TIME_LINK_ID) is not None
+    assert repository.get_time_link(TIME_LINK_DUP_ID) is None
 
 
 def test_sync_write_result_to_persistent_bundle(
@@ -394,8 +475,10 @@ def _cleanup(repository: PostgresPersistentMemoryRepository) -> None:
             ("entity", ENTITY_ID),
             ("property", PROPERTY_ID),
             ("link", LINK_ID),
+            ("link", LINK_DUP_ID),
             ("time_ref", TIME_REF_ID),
             ("time_link", TIME_LINK_ID),
+            ("time_link", TIME_LINK_DUP_ID),
         ]:
             connection.execute(
                 """
@@ -404,8 +487,14 @@ def _cleanup(repository: PostgresPersistentMemoryRepository) -> None:
                 """,
                 (memory_type, memory_id),
             )
-        connection.execute("DELETE FROM memory_time_links WHERE id = %s", (TIME_LINK_ID,))
-        connection.execute("DELETE FROM memory_links WHERE id = %s", (LINK_ID,))
+        connection.execute(
+            "DELETE FROM memory_time_links WHERE id = ANY(%s)",
+            ([TIME_LINK_ID, TIME_LINK_DUP_ID],),
+        )
+        connection.execute(
+            "DELETE FROM memory_links WHERE id = ANY(%s)",
+            ([LINK_ID, LINK_DUP_ID],),
+        )
         connection.execute("DELETE FROM memory_properties WHERE id = %s", (PROPERTY_ID,))
         connection.execute(
             "DELETE FROM memory_descriptions WHERE id = %s",

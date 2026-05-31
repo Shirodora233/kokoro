@@ -659,7 +659,7 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         link: PersistentLink,
     ) -> PersistentLink:
         link_id = link.id or new_persistent_id("link")
-        connection.execute(
+        row = connection.execute(
             """
             INSERT INTO memory_links (
                 id, user_id, from_type, from_id, to_type, to_id,
@@ -667,13 +667,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 created_checkpoint_id, created_checkpoint_sequence
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
+            ON CONFLICT (from_type, from_id, to_type, to_id, relation_type)
+            DO UPDATE SET
                 user_id = EXCLUDED.user_id,
-                from_type = EXCLUDED.from_type,
-                from_id = EXCLUDED.from_id,
-                to_type = EXCLUDED.to_type,
-                to_id = EXCLUDED.to_id,
-                relation_type = EXCLUDED.relation_type,
                 reason = EXCLUDED.reason,
                 confidence = EXCLUDED.confidence,
                 metadata = EXCLUDED.metadata,
@@ -681,6 +677,7 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 created_checkpoint_id = EXCLUDED.created_checkpoint_id,
                 created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
+            RETURNING id
             """,
             (
                 link_id,
@@ -697,9 +694,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 link.created_checkpoint_id,
                 link.created_checkpoint_sequence,
             ),
-        )
-        stored = replace(link, id=link_id)
-        self.sources.save_source_refs(connection, "link", link_id, link.source_refs)
+        ).fetchone()
+        stored_id = row["id"]
+        stored = replace(link, id=stored_id)
+        self.sources.save_source_refs(connection, "link", stored_id, link.source_refs)
         return stored
 
     def _save_time_ref(
@@ -774,7 +772,7 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         time_link: PersistentTimeLink,
     ) -> PersistentTimeLink:
         time_link_id = time_link.id or new_persistent_id("time_link")
-        connection.execute(
+        row = connection.execute(
             """
             INSERT INTO memory_time_links (
                 id, target_type, target_id, time_ref_id, time_role,
@@ -782,17 +780,15 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 created_checkpoint_sequence
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                target_type = EXCLUDED.target_type,
-                target_id = EXCLUDED.target_id,
-                time_ref_id = EXCLUDED.time_ref_id,
-                time_role = EXCLUDED.time_role,
+            ON CONFLICT (target_type, target_id, time_ref_id, time_role)
+            DO UPDATE SET
                 confidence = EXCLUDED.confidence,
                 metadata = EXCLUDED.metadata,
                 created_turn_id = EXCLUDED.created_turn_id,
                 created_checkpoint_id = EXCLUDED.created_checkpoint_id,
                 created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
+            RETURNING id
             """,
             (
                 time_link_id,
@@ -806,12 +802,13 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 time_link.created_checkpoint_id,
                 time_link.created_checkpoint_sequence,
             ),
-        )
-        stored = replace(time_link, id=time_link_id)
+        ).fetchone()
+        stored_id = row["id"]
+        stored = replace(time_link, id=stored_id)
         self.sources.save_source_refs(
             connection,
             "time_link",
-            time_link_id,
+            stored_id,
             time_link.source_refs,
         )
         return stored

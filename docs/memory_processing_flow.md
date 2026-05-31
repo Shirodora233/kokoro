@@ -185,6 +185,15 @@ Extractor contract 当前采用聚合候选输出：
 - 用户也可以作为普通 entity 候选输出，后续 reconciliation 再和系统用户实体合并。
 - `time` 嵌套在 event、description 或 property 上；normalizer 再拆成底层 `time_ref` 和 `time_link`。
 
+已记录的候选重复问题：
+
+- 当前 prompt 允许 `event.entities[]` 使用完整 entity contract，也允许顶层 `entity_candidates[]` 输出同一实体及其 properties。
+- 因此同一条用户消息可能让 LLM 同时输出：`event 吃打抛饭经历 -> entity 打抛饭 -> property 打抛饭吃起来很辣`，以及顶层 `entity_candidates -> entity 打抛饭 -> property 打抛饭吃起来很辣`。
+- `parser` 会分别保留这两处结构；`normalizer` 会分别展开 event 内嵌 entity 和顶层 entity，于是可能生成重复的 `property`、`has_property` link 或 `time_link`。
+- 持久化层必须保持幂等：`memory_links` 按 `(from_type, from_id, to_type, to_id, relation_type)` upsert，`memory_time_links` 按 `(target_type, target_id, time_ref_id, time_role)` upsert，避免重复关系导致整轮 memory commit 失败。
+- 仍待补强的是 normalizer/reconciler 层的同批候选去重：在写入前合并同一批候选里语义和结构等价的 entity/property/description/link/time_link，减少 debug 噪音、无效 token 和重复写入压力。
+- prompt 后续也可以收紧：如果一个 entity/property 已在 `event.entities[]` 中表达，顶层 `entity_candidates[]` 应只在需要独立补充实体身份或额外属性时输出，避免无意义双写。
+
 `time_ref.metadata` 必须包含稳定字段：`raw_text`、`time_kind`、`timeline_kind`、`certainty`、`anchor_timezone`、`anchor_utc_offset`。不同 `time_kind` 还需要额外字段：`exact` 需要 `resolved_start` 和 `granularity`；`relative` 需要 `anchor_message_id`、`resolved_start` 和 `granularity`；`vague` 需要 `description`；`duration` 需要 `duration_text`；`recurring` 需要 `recurrence_text`。如果 event 没有显式或可推断的事件时间，但仍值得抽取，应以消息提及时间建立 `time_ref` 并用 `time_role=mentioned_at` 连接。
 
 ## 6. 上下文压缩
