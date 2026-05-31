@@ -77,6 +77,20 @@ CREATE TABLE IF NOT EXISTS session_branches (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS conversation_memory_debug_traces (
+  trace_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  turn_id TEXT REFERENCES conversation_turns(id) ON DELETE CASCADE,
+  user_message_id TEXT,
+  assistant_message_id TEXT,
+  checkpoint_id TEXT REFERENCES conversation_checkpoints(id) ON DELETE CASCADE,
+  checkpoint_sequence INTEGER,
+  memory_status TEXT NOT NULL DEFAULT 'not_run',
+  summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+  trace JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TEXT NOT NULL
+);
+
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS checkpoint_id TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sequence INTEGER;
@@ -94,3 +108,9 @@ CREATE INDEX IF NOT EXISTS idx_conversation_turns_session_status ON conversation
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_idempotency ON conversation_turns(session_id, idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_conversation_checkpoints_session_sequence ON conversation_checkpoints(session_id, sequence DESC);
 CREATE INDEX IF NOT EXISTS idx_session_branches_parent ON session_branches(parent_session_id, base_checkpoint_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_memory_debug_session_sequence
+  ON conversation_memory_debug_traces(session_id, checkpoint_sequence);
+CREATE INDEX IF NOT EXISTS idx_conversation_memory_debug_checkpoint
+  ON conversation_memory_debug_traces(checkpoint_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_memory_debug_messages
+  ON conversation_memory_debug_traces(user_message_id, assistant_message_id);

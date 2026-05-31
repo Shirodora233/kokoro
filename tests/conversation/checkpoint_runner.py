@@ -12,6 +12,7 @@ from llm.config import LLMConfig
 from llm.interfaces import ChatCompletionResult, ChatMessageParam
 from memory import (
     InMemoryMemorySystem,
+    MemoryDebugRecorder,
     MemorySearchRequest,
     MemoryWriteResultPersistenceSync,
     NormalizedMemoryContextRetriever,
@@ -32,6 +33,8 @@ def main() -> int:
         test_atomic_turn_creates_checkpoint_and_idempotent_retry,
         test_checkpoint_failure_rolls_back_visible_state,
         test_branch_session_keeps_original_and_filters_future_memory,
+        test_persisted_memory_debug_trace_survives_restart,
+        test_checkpoint_memory_filters_future_records,
         test_http_checkpoint_and_branch_routes,
     ]
     for test in tests:
@@ -173,6 +176,67 @@ def test_branch_session_keeps_original_and_filters_future_memory(
         _cleanup(database_url, user.id)
 
 
+def test_persisted_memory_debug_trace_survives_restart(database_url: str) -> None:
+    service, _chat_client = _service(
+        database_url,
+        [[candidate("entity", "PersistedDebugOnly", "cand_debug")]],
+    )
+    user = service.create_user(USERNAME)
+    session = service.start_session(user.id)
+
+    try:
+        service.send_message(session.id, "remember PersistedDebugOnly")
+        summaries = service.list_session_turn_debug(session.id)
+        assert len(summaries) == 1
+        assert summaries[0]["candidate_count"] == 1
+        assert summaries[0]["memory_status"] == "committed"
+        trace_id = summaries[0]["trace_id"]
+
+        restarted, _ = _service(database_url, [])
+        restarted_summaries = restarted.list_session_turn_debug(session.id)
+        persisted_trace = restarted.get_memory_debug_trace(
+            trace_id,
+            include_raw=True,
+        )
+
+        assert restarted_summaries[0]["trace_id"] == trace_id
+        assert persisted_trace["trace_id"] == trace_id
+        assert persisted_trace["extraction"]["parse_status"] == "external"
+        assert "raw_output" not in persisted_trace["extraction"]
+        assert "prompt_messages" not in persisted_trace["extraction"]
+    finally:
+        _cleanup(database_url, user.id)
+
+
+def test_checkpoint_memory_filters_future_records(database_url: str) -> None:
+    service, _chat_client = _service(
+        database_url,
+        [
+            [candidate("entity", "CheckpointBeforeOnly", "cand_before")],
+            [candidate("entity", "CheckpointAfterOnly", "cand_after")],
+        ],
+    )
+    user = service.create_user(USERNAME)
+    session = service.start_session(user.id)
+
+    try:
+        service.send_message(session.id, "before memory")
+        first_checkpoint = service.list_checkpoints(session.id)[0]
+        service.send_message(session.id, "after memory")
+
+        first_memory = service.get_checkpoint_memory(first_checkpoint.id)
+        texts = [
+            item["text"]
+            for item in first_memory["generic_memories"]
+        ]
+
+        assert "CheckpointBeforeOnly" in texts
+        assert "CheckpointAfterOnly" not in texts
+        assert first_memory["checkpoint"]["id"] == first_checkpoint.id
+    finally:
+        _cleanup(database_url, user.id)
+
+
 def test_http_checkpoint_and_branch_routes(database_url: str) -> None:
     service, _chat_client = _service(
         database_url,
@@ -197,6 +261,18 @@ def test_http_checkpoint_and_branch_routes(database_url: str) -> None:
             {},
         )
         checkpoint_id = checkpoints_response["checkpoints"][0]["id"]
+        turn_debug_response = handler._route_api(
+            "GET",
+            f"/api/sessions/{session.id}/turn-debug",
+            {},
+            {},
+        )
+        checkpoint_memory_response = handler._route_api(
+            "GET",
+            f"/api/checkpoints/{checkpoint_id}/memory",
+            {},
+            {},
+        )
         updated_response = handler._route_api(
             "PATCH",
             f"/api/checkpoints/{checkpoint_id}",
@@ -213,6 +289,8 @@ def test_http_checkpoint_and_branch_routes(database_url: str) -> None:
         assert updated_response["checkpoint"]["label"] == "saved point"
         assert updated_response["checkpoint"]["metadata"]["pinned"] is True
         assert branch_response["session"]["title"] == "http branch"
+        assert turn_debug_response["turn_debug"][0]["checkpoint_id"] == checkpoint_id
+        assert checkpoint_memory_response["memory"]["checkpoint"]["id"] == checkpoint_id
     finally:
         _cleanup(database_url, user.id)
 
@@ -225,6 +303,7 @@ def _service(
     store.checkpoints.fail_incomplete_turns()
     memory_store = PostgresMemoryStore(database_url)
     persistent = PostgresPersistentMemoryRepository(database_url)
+    debug_recorder = MemoryDebugRecorder()
     memory_system = InMemoryMemorySystem(
         store=memory_store,
         extractor=SequenceMemoryExtractor(memory_batches),
@@ -233,6 +312,7 @@ def _service(
             search=PostgresNormalizedMemorySearch(persistent),
         ),
         persistence_sync=MemoryWriteResultPersistenceSync(persistent),
+        debug_recorder=debug_recorder,
     )
     chat_client = _StaticChatClient()
     return (

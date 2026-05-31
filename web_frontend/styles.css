@@ -371,11 +371,16 @@ h2 {
   box-shadow: var(--shadow);
 }
 
+.wide-modal {
+  width: min(860px, calc(100vw - 32px));
+}
+
 .modal::backdrop {
   background: rgba(23, 33, 43, 0.28);
 }
 
-.modal form {
+.modal form,
+.modal-panel {
   padding: 18px;
 }
 
@@ -515,6 +520,88 @@ h2 {
   line-height: 1.55;
 }
 
+.process-card {
+  width: min(700px, 88%);
+  align-self: center;
+  border: 1px solid #cfdde2;
+  border-radius: 8px;
+  background: #fbfdfd;
+  box-shadow: var(--shadow);
+}
+
+.process-card[open] {
+  background: #ffffff;
+}
+
+.process-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.process-summary::-webkit-details-marker {
+  display: none;
+}
+
+.process-title {
+  color: #285f67;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.process-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.process-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.debug-section,
+.memory-section {
+  display: grid;
+  gap: 6px;
+}
+
+.debug-section h3,
+.memory-section h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.debug-list,
+.memory-list {
+  display: grid;
+  gap: 6px;
+}
+
+.debug-row,
+.memory-row {
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fbfcfd;
+  line-height: 1.45;
+}
+
 .savepoint-footer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -564,6 +651,14 @@ h2 {
   min-height: 30px;
   flex-basis: 30px;
   border-color: transparent;
+}
+
+.memory-modal-content {
+  display: grid;
+  max-height: min(68vh, 680px);
+  gap: 12px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .composer {
@@ -671,6 +766,15 @@ h2 {
 
   .message {
     width: 100%;
+  }
+
+  .process-card {
+    width: 100%;
+  }
+
+  .process-summary {
+    grid-template-columns: 1fr;
+    align-items: start;
   }
 
   .savepoint-footer {

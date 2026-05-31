@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ from .interfaces import ConversationStore
 from .models import (
     ChatSession,
     ConversationCheckpoint,
+    ConversationMemoryDebugTrace,
     ConversationTurn,
     Message,
     SessionBranch,
@@ -520,6 +522,20 @@ class ConversationService:
                         connection,
                         checkpoint,
                     )
+                    self._persist_memory_debug_trace_in_connection(
+                        connection,
+                        trace_id=(
+                            debug_trace_id
+                            if isinstance(debug_trace_id, str)
+                            else None
+                        ),
+                        session_id=session.id,
+                        turn=turn,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                        checkpoint=checkpoint,
+                        memory_status=memory_status,
+                    )
                     postgres_store.checkpoints.complete_turn_in_connection(
                         connection,
                         turn.id,
@@ -713,9 +729,54 @@ class ConversationService:
             trace_id,
             include_raw=include_raw,
         )
-        if trace is None:
-            raise ValueError(f"Unknown memory debug trace: {trace_id}")
-        return trace
+        if trace is not None:
+            return trace
+        postgres_store = self._postgres_store()
+        if postgres_store is not None and hasattr(postgres_store, "debug"):
+            persisted = postgres_store.debug.get_trace(trace_id)
+            if persisted is not None:
+                return persisted.trace
+        raise ValueError(f"Unknown memory debug trace: {trace_id}")
+
+    def list_session_turn_debug(
+        self,
+        session_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        postgres_store = self._postgres_store()
+        if postgres_store is None or not hasattr(postgres_store, "debug"):
+            return []
+        self._require_session(session_id, allow_archived=True)
+        return [
+            trace.to_summary_record()
+            for trace in postgres_store.debug.list_visible_turn_debug(
+                self._visible_session_scopes(session_id),
+                limit=limit,
+            )
+        ]
+
+    def get_checkpoint_memory(
+        self,
+        checkpoint_id: str,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        postgres_store = self._postgres_store()
+        if postgres_store is None or not hasattr(postgres_store, "debug"):
+            raise NotImplementedError("Checkpoint memory requires PostgreSQL")
+        checkpoint = postgres_store.checkpoints.get_checkpoint(checkpoint_id)
+        if checkpoint is None:
+            raise ValueError(f"Unknown checkpoint_id: {checkpoint_id}")
+        session = self._require_session(checkpoint.session_id, allow_archived=True)
+        snapshot = postgres_store.debug.checkpoint_memory_snapshot(
+            user_id=session.user_id,
+            scopes=self._checkpoint_visible_session_scopes(checkpoint),
+            limit=limit,
+        )
+        return {
+            "checkpoint": checkpoint.to_record(),
+            "active_memory_snapshot": dict(checkpoint.active_memory_snapshot),
+            **snapshot,
+        }
 
     def memory_debug_trace_for_message(
         self,
@@ -926,6 +987,74 @@ class ConversationService:
             return [{"session_id": session_id, "max_checkpoint_sequence": None}]
         return postgres_store.checkpoints.branch_memory_scope(session_id)
 
+    def _checkpoint_visible_session_scopes(
+        self,
+        checkpoint: ConversationCheckpoint,
+    ) -> list[dict[str, Any]]:
+        scopes = self._visible_session_scopes(checkpoint.session_id)
+        scoped: list[dict[str, Any]] = []
+        found_checkpoint_session = False
+        for scope in scopes:
+            scope_copy = dict(scope)
+            if scope_copy.get("session_id") == checkpoint.session_id:
+                found_checkpoint_session = True
+                max_sequence = scope_copy.get("max_checkpoint_sequence")
+                if not isinstance(max_sequence, int) or max_sequence > checkpoint.sequence:
+                    scope_copy["max_checkpoint_sequence"] = checkpoint.sequence
+            scoped.append(scope_copy)
+        if not found_checkpoint_session:
+            scoped.append(
+                {
+                    "session_id": checkpoint.session_id,
+                    "max_checkpoint_sequence": checkpoint.sequence,
+                }
+            )
+        return scoped
+
+    def _persist_memory_debug_trace_in_connection(
+        self,
+        connection: Any,
+        *,
+        trace_id: str | None,
+        session_id: str,
+        turn: ConversationTurn,
+        user_message: Message,
+        assistant_message: Message,
+        checkpoint: ConversationCheckpoint,
+        memory_status: str,
+    ) -> None:
+        if not trace_id:
+            return
+        postgres_store = self._postgres_store()
+        if postgres_store is None or not hasattr(postgres_store, "debug"):
+            return
+        recorder = getattr(self.memory_debug_service, "recorder", None)
+        trace = recorder.get(trace_id) if recorder is not None else None
+        if trace is None:
+            return
+        payload = _sanitized_memory_debug_trace(trace.to_record(include_raw=False))
+        summary = _memory_debug_summary(payload, memory_status=memory_status)
+        postgres_store.debug.save_trace_in_connection(
+            connection,
+            ConversationMemoryDebugTrace(
+                trace_id=trace_id,
+                session_id=session_id,
+                turn_id=turn.id,
+                user_message_id=user_message.id,
+                assistant_message_id=assistant_message.id,
+                checkpoint_id=checkpoint.id,
+                checkpoint_sequence=checkpoint.sequence,
+                memory_status=memory_status,
+                summary=summary,
+                trace={
+                    **payload,
+                    "memory_status": memory_status,
+                    "checkpoint_id": checkpoint.id,
+                    "checkpoint_sequence": checkpoint.sequence,
+                },
+            ),
+        )
+
     def _messages_for_committed_turn(
         self,
         turn: ConversationTurn,
@@ -984,6 +1113,73 @@ class ConversationService:
             memory_store=getattr(memory_system, "store", None),
             active_cache=getattr(memory_system, "active_cache", None),
         )
+
+
+def _sanitized_memory_debug_trace(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    extraction = sanitized.get("extraction")
+    if isinstance(extraction, dict):
+        extraction.pop("prompt_messages", None)
+        extraction.pop("raw_output", None)
+    retrieval = sanitized.get("retrieval")
+    if isinstance(retrieval, dict):
+        request = retrieval.get("retrieval_request")
+        if isinstance(request, dict):
+            context = request.get("conversation_context")
+            if isinstance(context, list):
+                request["conversation_context_count"] = len(context)
+                request["conversation_context"] = [
+                    {
+                        "id": message.get("id"),
+                        "role": message.get("role"),
+                    }
+                    for message in context
+                    if isinstance(message, dict)
+                ]
+    return sanitized
+
+
+def _memory_debug_summary(
+    payload: dict[str, Any],
+    *,
+    memory_status: str,
+) -> dict[str, Any]:
+    extraction = _dict(payload.get("extraction"))
+    retrieval = _dict(payload.get("retrieval"))
+    search_result = _dict(retrieval.get("search_result"))
+    active_context = _dict(retrieval.get("active_memory_context"))
+    normalized_records = _list(extraction.get("normalized_records"))
+    hits = _list(search_result.get("hits"))
+    memory_context = _list(retrieval.get("memory_context"))
+    return {
+        "status": payload.get("status"),
+        "parse_status": extraction.get("parse_status"),
+        "parse_error": extraction.get("parse_error"),
+        "candidate_count": len(normalized_records),
+        "parsed_candidate_counts": _dict(extraction.get("parsed_candidate_counts")),
+        "validated_candidate_counts": _dict(
+            extraction.get("validated_candidate_counts")
+        ),
+        "dropped_candidate_counts": _dict(extraction.get("dropped_candidate_counts")),
+        "validation_error_count": len(_list(extraction.get("validation_errors"))),
+        "search_hit_count": len(hits),
+        "memory_context_count": len(memory_context),
+        "active_counts": {
+            "events": len(_list(active_context.get("event_memories"))),
+            "entities": len(_list(active_context.get("entity_memories"))),
+            "properties": len(_list(active_context.get("property_memories"))),
+            "other": len(_list(active_context.get("other_memories"))),
+        },
+        "memory_status": memory_status,
+    }
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 class _ConnectionPersistentMemoryRepository:

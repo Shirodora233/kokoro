@@ -237,6 +237,42 @@ class ConversationCheckpoint:
 
 
 @dataclass
+class ConversationMemoryDebugTrace:
+    trace_id: str
+    session_id: str
+    turn_id: str | None
+    user_message_id: str | None
+    assistant_message_id: str | None
+    checkpoint_id: str | None
+    checkpoint_sequence: int | None
+    memory_status: str = "not_run"
+    summary: dict[str, Any] = field(default_factory=dict)
+    trace: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "ConversationMemoryDebugTrace":
+        return cls(**record)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_summary_record(self) -> dict[str, Any]:
+        return {
+            "trace_id": self.trace_id,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "user_message_id": self.user_message_id,
+            "assistant_message_id": self.assistant_message_id,
+            "checkpoint_id": self.checkpoint_id,
+            "checkpoint_sequence": self.checkpoint_sequence,
+            "memory_status": self.memory_status,
+            "created_at": self.created_at,
+            **dict(self.summary),
+        }
+
+
+@dataclass
 class SessionBranch:
     session_id: str
     root_session_id: str

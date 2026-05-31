@@ -8,6 +8,7 @@ from conversation.models import ChatSession, Message, User
 
 from .checkpoint_repository import PostgresCheckpointRepository
 from .connection import PostgresDatabase
+from .debug_repository import PostgresConversationDebugRepository
 from .import_repository import PostgresImportRepository
 from .maintenance_repository import PostgresMaintenanceRepository
 from .message_repository import PostgresMessageRepository
@@ -25,6 +26,7 @@ class PostgresConversationStore:
         self.sessions = PostgresSessionRepository(self.database)
         self.messages = PostgresMessageRepository(self.database)
         self.checkpoints = PostgresCheckpointRepository(self.database)
+        self.debug = PostgresConversationDebugRepository(self.database)
         self.importer = PostgresImportRepository(self.database)
         self.maintenance = PostgresMaintenanceRepository(self.database)
 

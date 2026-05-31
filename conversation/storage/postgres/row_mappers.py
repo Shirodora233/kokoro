@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from conversation.models import (
     ChatSession,
     ConversationCheckpoint,
+    ConversationMemoryDebugTrace,
     ConversationTurn,
     Message,
     SessionBranch,
@@ -99,6 +100,24 @@ def checkpoint_from_row(row: Mapping[str, Any]) -> ConversationCheckpoint:
             "session_snapshot": row["session_snapshot"] or {},
             "active_memory_snapshot": row["active_memory_snapshot"] or {},
             "metadata": row["metadata"] or {},
+            "created_at": row["created_at"],
+        }
+    )
+
+
+def memory_debug_trace_from_row(row: Mapping[str, Any]) -> ConversationMemoryDebugTrace:
+    return ConversationMemoryDebugTrace.from_record(
+        {
+            "trace_id": row["trace_id"],
+            "session_id": row["session_id"],
+            "turn_id": row["turn_id"],
+            "user_message_id": row["user_message_id"],
+            "assistant_message_id": row["assistant_message_id"],
+            "checkpoint_id": row["checkpoint_id"],
+            "checkpoint_sequence": row["checkpoint_sequence"],
+            "memory_status": row["memory_status"],
+            "summary": row["summary"] or {},
+            "trace": row["trace"] or {},
             "created_at": row["created_at"],
         }
     )

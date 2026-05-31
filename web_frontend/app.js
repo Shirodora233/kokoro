@@ -5,12 +5,18 @@ const state = {
   checkpoints: [],
   checkpointsByAssistantMessageId: new Map(),
   checkpointsUnavailable: false,
+  turnDebug: [],
+  turnDebugByUserMessageId: new Map(),
+  turnDebugUnavailable: false,
+  traceDetailsById: new Map(),
+  checkpointMemoryById: new Map(),
   selectedUsername: localStorage.getItem("kokoro.selectedUsername") || "",
   selectedSessionId: localStorage.getItem("kokoro.selectedSessionId") || "",
   editingSessionId: "",
   deletingSessionId: "",
   editingCheckpointId: "",
   branchingCheckpointId: "",
+  viewingCheckpointId: "",
   busy: false,
 };
 
@@ -56,6 +62,9 @@ const els = {
   branchForm: document.querySelector("#branchForm"),
   branchCheckpointName: document.querySelector("#branchCheckpointName"),
   branchTitleInput: document.querySelector("#branchTitleInput"),
+  checkpointMemoryDialog: document.querySelector("#checkpointMemoryDialog"),
+  checkpointMemoryTitle: document.querySelector("#checkpointMemoryTitle"),
+  checkpointMemoryContent: document.querySelector("#checkpointMemoryContent"),
   toast: document.querySelector("#toast"),
 };
 
@@ -248,13 +257,149 @@ function renderMessages() {
     content.textContent = message.content;
 
     article.append(role, content);
-    const checkpoint = state.checkpointsByAssistantMessageId.get(message.id);
-    if (message.role === "assistant" && checkpoint) {
-      article.append(savepointFooter(checkpoint));
-    }
     els.chatLog.append(article);
+    if (message.role === "user") {
+      const debug = state.turnDebugByUserMessageId.get(message.id);
+      if (debug) {
+        els.chatLog.append(processDebugCard(debug));
+      }
+    }
+    if (message.role === "assistant") {
+      const checkpoint = state.checkpointsByAssistantMessageId.get(message.id);
+      if (checkpoint) {
+        article.append(savepointFooter(checkpoint));
+      }
+    }
   });
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
+function processDebugCard(debug) {
+  const details = document.createElement("details");
+  details.className = "process-card";
+
+  const summary = document.createElement("summary");
+  summary.className = "process-summary";
+
+  const title = document.createElement("span");
+  title.className = "process-title";
+  title.textContent = "Memory process";
+
+  const meta = document.createElement("span");
+  meta.className = "process-meta";
+  meta.textContent = processSummaryText(debug);
+
+  summary.append(title, meta);
+
+  const body = document.createElement("div");
+  body.className = "process-body";
+  body.textContent = "Loading...";
+
+  details.append(summary, body);
+  details.addEventListener("toggle", () => {
+    if (details.open) {
+      loadTraceDetails(debug.trace_id, body);
+    }
+  });
+  return details;
+}
+
+function processSummaryText(debug) {
+  const active = debug.active_counts || {};
+  const activeTotal = ["events", "entities", "properties", "other"]
+    .reduce((sum, key) => sum + Number(active[key] || 0), 0);
+  return [
+    `Extractor ${debug.candidate_count || 0}`,
+    `Retrieval ${debug.search_hit_count || 0}`,
+    `Active ${activeTotal}`,
+    `Context ${debug.memory_context_count || 0}`,
+    debug.memory_status === "failed" ? "Memory failed" : "",
+  ].filter(Boolean).join(" · ");
+}
+
+async function loadTraceDetails(traceId, container) {
+  if (!traceId) {
+    container.textContent = "No trace id";
+    return;
+  }
+  if (state.traceDetailsById.has(traceId)) {
+    renderTraceDetails(container, state.traceDetailsById.get(traceId));
+    return;
+  }
+  container.textContent = "Loading...";
+  try {
+    const data = await api(`/api/debug/memory/traces/${encodeURIComponent(traceId)}`);
+    state.traceDetailsById.set(traceId, data.trace);
+    renderTraceDetails(container, data.trace);
+  } catch (error) {
+    container.textContent = error.message;
+  }
+}
+
+function renderTraceDetails(container, trace) {
+  container.innerHTML = "";
+  const extraction = trace?.extraction || {};
+  const retrieval = trace?.retrieval || {};
+  const searchResult = retrieval.search_result || {};
+
+  container.append(
+    debugSection(
+      "Extracted candidates",
+      extraction.normalized_records || [],
+      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
+    ),
+    debugSection(
+      "Retrieval hits",
+      searchResult.hits || [],
+      (hit) => `${scoreText(hit.score)} · ${hit.reason || "match"} · ${hit.matched_text || hit.object_ref?.object_id || ""}`,
+    ),
+    debugSection(
+      "Active context",
+      activeContextRecords(retrieval.active_memory_context),
+      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
+    ),
+    debugSection(
+      "Memory context sent to LLM",
+      retrieval.memory_context || [],
+      (block) => `${block.kind || "memory"} · ${block.content || ""}`,
+    ),
+  );
+}
+
+function debugSection(title, items, formatter) {
+  const section = document.createElement("section");
+  section.className = "debug-section";
+  const heading = document.createElement("h3");
+  heading.textContent = `${title} (${items.length})`;
+  section.append(heading);
+  if (items.length === 0) {
+    section.append(emptyState("None"));
+    return section;
+  }
+  const list = document.createElement("div");
+  list.className = "debug-list";
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "debug-row";
+    row.textContent = formatter(item);
+    list.append(row);
+  });
+  section.append(list);
+  return section;
+}
+
+function activeContextRecords(activeContext) {
+  if (!activeContext) return [];
+  return [
+    ...(activeContext.event_memories || []),
+    ...(activeContext.entity_memories || []),
+    ...(activeContext.property_memories || []),
+    ...(activeContext.other_memories || []),
+  ];
+}
+
+function scoreText(score) {
+  return typeof score === "number" ? score.toFixed(2) : "0.00";
 }
 
 function savepointFooter(checkpoint) {
@@ -266,11 +411,11 @@ function savepointFooter(checkpoint) {
 
   const title = document.createElement("span");
   title.className = "savepoint-title";
-  title.textContent = checkpoint.label || `Savepoint #${checkpoint.sequence}`;
+  title.textContent = checkpointLabel(checkpoint);
 
   const meta = document.createElement("span");
   meta.className = "savepoint-meta";
-  meta.textContent = checkpoint.label ? `Savepoint #${checkpoint.sequence}` : formatDate(checkpoint.created_at);
+  meta.textContent = checkpoint.label ? savepointNumberLabel(checkpoint) : formatDate(checkpoint.created_at);
 
   info.append(title, meta);
 
@@ -293,7 +438,15 @@ function savepointFooter(checkpoint) {
   branchButton.innerHTML = iconMarkup("branch");
   branchButton.addEventListener("click", () => openBranchDialog(checkpoint));
 
-  actions.append(editButton, branchButton);
+  const memoryButton = document.createElement("button");
+  memoryButton.className = "icon-button ghost-button";
+  memoryButton.type = "button";
+  memoryButton.title = "View checkpoint memory";
+  memoryButton.setAttribute("aria-label", "View checkpoint memory");
+  memoryButton.innerHTML = iconMarkup("memory");
+  memoryButton.addEventListener("click", () => openCheckpointMemoryDialog(checkpoint));
+
+  actions.append(editButton, memoryButton, branchButton);
   footer.append(info, actions);
   return footer;
 }
@@ -309,6 +462,7 @@ function iconMarkup(name) {
   const icons = {
     branch: '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M6 9v6"></path><path d="M9 6h3a6 6 0 0 1 6 6v3"></path></svg>',
     edit: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 17.5V20h2.5L18 8.5 15.5 6 4 17.5z"></path><path d="M17 4l3 3"></path></svg>',
+    memory: '<svg aria-hidden="true" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="7" ry="3"></ellipse><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"></path><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"></path></svg>',
     trash: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 7h14"></path><path d="M9 7V5h6v2"></path><path d="M8 10v8"></path><path d="M12 10v8"></path><path d="M16 10v8"></path><path d="M7 7l1 13h8l1-13"></path></svg>',
   };
   return icons[name] || "";
@@ -319,14 +473,19 @@ function branchLabel(session) {
   if (!branch) {
     return "";
   }
-  if (branch.base_sequence !== undefined && branch.base_sequence !== null) {
-    return `Branch from #${branch.base_sequence}`;
-  }
   return "Branch session";
 }
 
 function checkpointLabel(checkpoint) {
-  return checkpoint.label || `Savepoint #${checkpoint.sequence}`;
+  return checkpoint.label || savepointNumberLabel(checkpoint);
+}
+
+function savepointNumberLabel(checkpoint) {
+  return `Savepoint #${checkpoint.ui_number || "?"}`;
+}
+
+function checkpointSequenceLabel(checkpoint) {
+  return `message sequence ${checkpoint.sequence}`;
 }
 
 function formatDate(value) {
@@ -390,7 +549,7 @@ function openDeleteUserDialog() {
 
 function openEditCheckpointDialog(checkpoint) {
   state.editingCheckpointId = checkpoint.id;
-  els.editCheckpointName.textContent = `Rename ${checkpointLabel(checkpoint)}`;
+  els.editCheckpointName.textContent = `Rename ${checkpointLabel(checkpoint)} (${checkpointSequenceLabel(checkpoint)})`;
   els.editCheckpointLabelInput.value = checkpoint.label || "";
   openDialog(els.editCheckpointDialog);
   els.editCheckpointLabelInput.focus();
@@ -401,16 +560,114 @@ function openBranchDialog(checkpoint) {
   state.branchingCheckpointId = checkpoint.id;
   els.branchCheckpointName.textContent = `Create a new session from ${checkpointLabel(checkpoint)}.`;
   els.branchTitleInput.value = session
-    ? `${session.title} from #${checkpoint.sequence}`
-    : `Branch from #${checkpoint.sequence}`;
+    ? `${session.title} from ${savepointNumberLabel(checkpoint)}`
+    : `Branch from ${savepointNumberLabel(checkpoint)}`;
   openDialog(els.branchDialog);
   els.branchTitleInput.focus();
+}
+
+async function openCheckpointMemoryDialog(checkpoint) {
+  state.viewingCheckpointId = checkpoint.id;
+  els.checkpointMemoryTitle.textContent = `${checkpointLabel(checkpoint)} memory`;
+  els.checkpointMemoryContent.innerHTML = "";
+  els.checkpointMemoryContent.append(emptyState("Loading memory..."));
+  openDialog(els.checkpointMemoryDialog);
+  try {
+    const memory = await loadCheckpointMemory(checkpoint.id);
+    if (state.viewingCheckpointId === checkpoint.id) {
+      renderCheckpointMemory(memory);
+    }
+  } catch (error) {
+    els.checkpointMemoryContent.innerHTML = "";
+    els.checkpointMemoryContent.append(emptyState(error.message));
+  }
+}
+
+async function loadCheckpointMemory(checkpointId) {
+  if (state.checkpointMemoryById.has(checkpointId)) {
+    return state.checkpointMemoryById.get(checkpointId);
+  }
+  const data = await api(`/api/checkpoints/${encodeURIComponent(checkpointId)}/memory?limit=100`);
+  state.checkpointMemoryById.set(checkpointId, data.memory);
+  return data.memory;
+}
+
+function renderCheckpointMemory(memory) {
+  els.checkpointMemoryContent.innerHTML = "";
+  const normalized = memory.normalized_memories || {};
+  els.checkpointMemoryContent.append(
+    memorySection(
+      "Active context snapshot",
+      activeContextRecords(memory.active_memory_snapshot),
+      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
+    ),
+    memorySection(
+      "Generic memories",
+      memory.generic_memories || [],
+      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
+    ),
+    memorySection(
+      "Events",
+      normalized.events || [],
+      (item) => `${item.title || item.id}${item.summary ? ` · ${item.summary}` : ""}`,
+    ),
+    memorySection(
+      "Entities",
+      normalized.entities || [],
+      (item) => `${item.name || item.id} · ${item.entity_type || "entity"}${item.identity_summary ? ` · ${item.identity_summary}` : ""}`,
+    ),
+    memorySection(
+      "Descriptions",
+      normalized.descriptions || [],
+      (item) => item.content || item.id || "",
+    ),
+    memorySection(
+      "Properties",
+      normalized.properties || [],
+      (item) => item.content || item.id || "",
+    ),
+  );
+}
+
+function memorySection(title, items, formatter) {
+  const section = document.createElement("section");
+  section.className = "memory-section";
+  const heading = document.createElement("h3");
+  heading.textContent = `${title} (${items.length})`;
+  section.append(heading);
+  if (items.length === 0) {
+    section.append(emptyState("None"));
+    return section;
+  }
+  const list = document.createElement("div");
+  list.className = "memory-list";
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "memory-row";
+    row.textContent = formatter(item);
+    list.append(row);
+  });
+  section.append(list);
+  return section;
 }
 
 function resetCheckpoints() {
   state.checkpoints = [];
   state.checkpointsByAssistantMessageId = new Map();
+}
+
+function resetTurnDebug() {
+  state.turnDebug = [];
+  state.turnDebugByUserMessageId = new Map();
+}
+
+function resetSessionDebugState() {
+  resetCheckpoints();
+  resetTurnDebug();
   state.checkpointsUnavailable = false;
+  state.turnDebugUnavailable = false;
+  state.traceDetailsById = new Map();
+  state.checkpointMemoryById = new Map();
 }
 
 function indexCheckpoints() {
@@ -418,6 +675,15 @@ function indexCheckpoints() {
   state.checkpoints.forEach((checkpoint) => {
     if (checkpoint.assistant_message_id) {
       state.checkpointsByAssistantMessageId.set(checkpoint.assistant_message_id, checkpoint);
+    }
+  });
+}
+
+function indexTurnDebug() {
+  state.turnDebugByUserMessageId = new Map();
+  state.turnDebug.forEach((debug) => {
+    if (debug.user_message_id) {
+      state.turnDebugByUserMessageId.set(debug.user_message_id, debug);
     }
   });
 }
@@ -431,7 +697,7 @@ async function loadUsers() {
   ) {
     state.selectedUsername = "";
     state.selectedSessionId = "";
-    resetCheckpoints();
+    resetSessionDebugState();
   }
   if (!state.selectedUsername && state.users.length > 0) {
     state.selectedUsername = state.users[0].username;
@@ -444,7 +710,7 @@ async function loadSessions() {
   if (!state.selectedUsername) {
     state.sessions = [];
     state.messages = [];
-    resetCheckpoints();
+    resetSessionDebugState();
     renderSessions();
     renderMessages();
     return;
@@ -456,7 +722,7 @@ async function loadSessions() {
     !state.sessions.some((session) => session.id === state.selectedSessionId)
   ) {
     state.selectedSessionId = "";
-    resetCheckpoints();
+    resetSessionDebugState();
   }
   if (!state.selectedSessionId && state.sessions.length > 0) {
     state.selectedSessionId = state.sessions[0].id;
@@ -469,7 +735,7 @@ async function loadSessions() {
 async function loadMessages() {
   if (!state.selectedSessionId) {
     state.messages = [];
-    resetCheckpoints();
+    resetSessionDebugState();
     renderMessages();
     return;
   }
@@ -479,7 +745,10 @@ async function loadMessages() {
     return;
   }
   state.messages = data.messages || [];
-  await loadCheckpoints(sessionId);
+  await Promise.all([
+    loadCheckpoints(sessionId),
+    loadTurnDebug(sessionId),
+  ]);
   if (sessionId !== state.selectedSessionId) {
     return;
   }
@@ -497,12 +766,38 @@ async function loadCheckpoints(sessionId = state.selectedSessionId) {
       return;
     }
     state.checkpointsUnavailable = false;
-    state.checkpoints = data.checkpoints || [];
+    state.checkpoints = (data.checkpoints || []).map((checkpoint, index) => ({
+      ...checkpoint,
+      ui_number: index + 1,
+    }));
     indexCheckpoints();
   } catch (error) {
     if (error.status === 501) {
       state.checkpointsUnavailable = true;
       resetCheckpoints();
+      return;
+    }
+    throw error;
+  }
+}
+
+async function loadTurnDebug(sessionId = state.selectedSessionId) {
+  if (!sessionId) {
+    resetTurnDebug();
+    return;
+  }
+  try {
+    const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/turn-debug?limit=100`);
+    if (sessionId !== state.selectedSessionId) {
+      return;
+    }
+    state.turnDebugUnavailable = false;
+    state.turnDebug = data.turn_debug || [];
+    indexTurnDebug();
+  } catch (error) {
+    if (error.status === 501) {
+      state.turnDebugUnavailable = true;
+      resetTurnDebug();
       return;
     }
     throw error;
@@ -568,7 +863,7 @@ els.deleteUserForm.addEventListener("submit", async (event) => {
     state.selectedSessionId = "";
     state.sessions = [];
     state.messages = [];
-    resetCheckpoints();
+    resetSessionDebugState();
     closeDialog(els.deleteUserDialog);
     await refreshAll();
     showToast("User deleted");
@@ -584,7 +879,7 @@ els.userSelect.addEventListener("change", async () => {
   state.selectedSessionId = "";
   persistSelection();
   state.messages = [];
-  resetCheckpoints();
+  resetSessionDebugState();
   renderUsers();
   await loadSessions();
 });
@@ -695,7 +990,7 @@ els.deleteSessionForm.addEventListener("submit", async (event) => {
     }
     state.deletingSessionId = "";
     state.messages = [];
-    resetCheckpoints();
+    resetSessionDebugState();
     closeDialog(els.deleteSessionDialog);
     await loadSessions();
     showToast("Session deleted");

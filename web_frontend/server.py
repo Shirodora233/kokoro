@@ -167,6 +167,14 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                     ]
                 }
 
+            if len(parts) == 2 and parts[1] == "turn-debug" and method == "GET":
+                return {
+                    "turn_debug": self.service.list_session_turn_debug(
+                        session_id=session_id,
+                        limit=self._query_int(query, "limit", 100),
+                    )
+                }
+
             if len(parts) == 2 and parts[1] == "branches" and method == "POST":
                 checkpoint_id = self._require_text(payload, "checkpoint_id")
                 title = self._optional_text(payload, "title")
@@ -242,8 +250,17 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
 
         checkpoint_prefix = "/api/checkpoints/"
         if path.startswith(checkpoint_prefix):
-            checkpoint_id = unquote(path.removeprefix(checkpoint_prefix))
-            if method == "PATCH":
+            suffix = path.removeprefix(checkpoint_prefix)
+            parts = suffix.split("/")
+            checkpoint_id = unquote(parts[0])
+            if len(parts) == 2 and parts[1] == "memory" and method == "GET":
+                return {
+                    "memory": self.service.get_checkpoint_memory(
+                        checkpoint_id=checkpoint_id,
+                        limit=self._query_int(query, "limit", 100),
+                    )
+                }
+            if len(parts) == 1 and method == "PATCH":
                 checkpoint = self.service.update_checkpoint(
                     checkpoint_id=checkpoint_id,
                     label=self._optional_text(payload, "label"),
