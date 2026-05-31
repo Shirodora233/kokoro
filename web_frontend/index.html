@@ -56,6 +56,7 @@
           <div class="current-context">
             <p id="currentUserLabel">No user</p>
             <h2 id="currentSessionTitle">No session</h2>
+            <p id="currentBranchLabel" class="branch-label" hidden></p>
           </div>
         </header>
 
@@ -155,6 +156,42 @@
         <div class="modal-actions">
           <button class="ghost-button" type="button" data-close-dialog="deleteSessionDialog">Cancel</button>
           <button class="danger-button" type="submit">Delete</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="editCheckpointDialog" class="modal">
+      <form id="editCheckpointForm" class="stack">
+        <header class="modal-header">
+          <h2>Name savepoint</h2>
+          <button class="icon-button ghost-button" type="button" data-close-dialog="editCheckpointDialog" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </header>
+        <p id="editCheckpointName" class="confirm-copy"></p>
+        <label for="editCheckpointLabelInput">Label</label>
+        <input id="editCheckpointLabelInput" placeholder="Useful checkpoint">
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="editCheckpointDialog">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="branchDialog" class="modal">
+      <form id="branchForm" class="stack">
+        <header class="modal-header">
+          <h2>New branch</h2>
+          <button class="icon-button ghost-button" type="button" data-close-dialog="branchDialog" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </header>
+        <p id="branchCheckpointName" class="confirm-copy"></p>
+        <label for="branchTitleInput">Branch title</label>
+        <input id="branchTitleInput" placeholder="Branch title">
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-dialog="branchDialog">Cancel</button>
+          <button type="submit">Create branch</button>
         </div>
       </form>
     </dialog>

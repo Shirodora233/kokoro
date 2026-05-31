@@ -310,6 +310,10 @@ h2 {
   background: var(--accent-soft);
 }
 
+.session-row.branch-session .item-meta {
+  color: #4f6f72;
+}
+
 .session-select {
   display: grid;
   height: 100%;
@@ -457,6 +461,11 @@ h2 {
   font-size: 13px;
 }
 
+.current-context .branch-label {
+  color: #4f6f72;
+  font-weight: 700;
+}
+
 .current-context h2 {
   overflow-wrap: anywhere;
   font-size: 22px;
@@ -504,6 +513,57 @@ h2 {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   line-height: 1.55;
+}
+
+.savepoint-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.savepoint-info {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.savepoint-title,
+.savepoint-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.savepoint-title {
+  color: #285f67;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.savepoint-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.savepoint-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.savepoint-actions .icon-button {
+  width: 30px;
+  height: 30px;
+  inline-size: 30px;
+  block-size: 30px;
+  min-height: 30px;
+  flex-basis: 30px;
+  border-color: transparent;
 }
 
 .composer {
@@ -611,5 +671,14 @@ h2 {
 
   .message {
     width: 100%;
+  }
+
+  .savepoint-footer {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .savepoint-actions {
+    justify-content: flex-end;
   }
 }
