@@ -592,6 +592,72 @@ h2 {
   gap: 6px;
 }
 
+.memory-tree {
+  display: grid;
+  gap: 8px;
+}
+
+.memory-node {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.memory-node[open] {
+  border-color: #bfd1d6;
+}
+
+.memory-node-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 42%);
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 9px 11px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.memory-node-summary::-webkit-details-marker {
+  display: none;
+}
+
+.memory-node-title,
+.memory-node-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-node-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.memory-node-meta {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.memory-node-body {
+  display: grid;
+  gap: 6px;
+  padding: 0 11px 11px;
+}
+
+.memory-child-row {
+  overflow-wrap: anywhere;
+  border-left: 3px solid #c8dcda;
+  border-radius: 0 8px 8px 0;
+  padding: 7px 9px;
+  color: var(--text);
+  background: #f6faf9;
+  line-height: 1.45;
+}
+
 .debug-row,
 .memory-row {
   overflow-wrap: anywhere;
@@ -775,6 +841,14 @@ h2 {
   .process-summary {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .memory-node-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .memory-node-meta {
+    text-align: left;
   }
 
   .savepoint-footer {

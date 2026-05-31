@@ -595,38 +595,48 @@ async function loadCheckpointMemory(checkpointId) {
 function renderCheckpointMemory(memory) {
   els.checkpointMemoryContent.innerHTML = "";
   const normalized = memory.normalized_memories || {};
-  els.checkpointMemoryContent.append(
-    memorySection(
-      "Active context snapshot",
-      activeContextRecords(memory.active_memory_snapshot),
-      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
-    ),
-    memorySection(
-      "Generic memories",
-      memory.generic_memories || [],
-      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
-    ),
-    memorySection(
-      "Events",
-      normalized.events || [],
-      (item) => `${item.title || item.id}${item.summary ? ` · ${item.summary}` : ""}`,
-    ),
-    memorySection(
+  const grouped = groupNormalizedMemory(normalized);
+  const activeRecords = activeContextRecords(memory.active_memory_snapshot);
+  const genericRecords = memory.generic_memories || [];
+
+  const sections = [
+    hierarchicalMemorySection(
       "Entities",
-      normalized.entities || [],
-      (item) => `${item.name || item.id} · ${item.entity_type || "entity"}${item.identity_summary ? ` · ${item.identity_summary}` : ""}`,
+      grouped.entities,
+      entitySummary,
+      (entity) => entityDetailRows(entity, grouped.propertiesByEntityId.get(entity.id) || []),
     ),
-    memorySection(
-      "Descriptions",
-      normalized.descriptions || [],
-      (item) => item.content || item.id || "",
+    hierarchicalMemorySection(
+      "Events",
+      grouped.events,
+      eventSummary,
+      (event) => eventDetailRows(event, grouped.descriptionsByEventId.get(event.id) || []),
     ),
-    memorySection(
-      "Properties",
-      normalized.properties || [],
-      (item) => item.content || item.id || "",
-    ),
-  );
+  ];
+
+  if (grouped.unlinkedProperties.length || grouped.unlinkedDescriptions.length) {
+    sections.push(memorySection(
+      "Unlinked details",
+      [...grouped.unlinkedProperties, ...grouped.unlinkedDescriptions],
+      (item) => item.content || item.text || item.id || "",
+    ));
+  }
+  if (activeRecords.length) {
+    sections.push(memorySection(
+      "Active context snapshot",
+      activeRecords,
+      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
+    ));
+  }
+  if (genericRecords.length && grouped.entities.length + grouped.events.length === 0) {
+    sections.push(memorySection(
+      "Generic memories",
+      genericRecords,
+      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
+    ));
+  }
+
+  els.checkpointMemoryContent.append(...sections);
 }
 
 function memorySection(title, items, formatter) {
@@ -649,6 +659,121 @@ function memorySection(title, items, formatter) {
   });
   section.append(list);
   return section;
+}
+
+function hierarchicalMemorySection(title, items, summaryFormatter, detailsFormatter) {
+  const section = document.createElement("section");
+  section.className = "memory-section";
+  const heading = document.createElement("h3");
+  heading.textContent = `${title} (${items.length})`;
+  section.append(heading);
+  if (items.length === 0) {
+    section.append(emptyState("None"));
+    return section;
+  }
+  const list = document.createElement("div");
+  list.className = "memory-tree";
+  items.forEach((item) => {
+    const details = document.createElement("details");
+    details.className = "memory-node";
+
+    const summary = document.createElement("summary");
+    summary.className = "memory-node-summary";
+    const summaryParts = summaryFormatter(item);
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "memory-node-title";
+    titleSpan.textContent = summaryParts.title;
+    const metaSpan = document.createElement("span");
+    metaSpan.className = "memory-node-meta";
+    metaSpan.textContent = summaryParts.meta;
+    summary.append(titleSpan, metaSpan);
+
+    const body = document.createElement("div");
+    body.className = "memory-node-body";
+    const rows = detailsFormatter(item);
+    if (rows.length === 0) {
+      body.append(emptyState("No details"));
+    } else {
+      rows.forEach((row) => {
+        const div = document.createElement("div");
+        div.className = "memory-child-row";
+        div.textContent = row;
+        body.append(div);
+      });
+    }
+    details.append(summary, body);
+    list.append(details);
+  });
+  section.append(list);
+  return section;
+}
+
+function groupNormalizedMemory(normalized) {
+  const events = normalized.events || [];
+  const descriptions = normalized.descriptions || [];
+  const entities = normalized.entities || [];
+  const properties = normalized.properties || [];
+  const eventIds = new Set(events.map((event) => event.id).filter(Boolean));
+  const entityIds = new Set(entities.map((entity) => entity.id).filter(Boolean));
+  const descriptionsByEventId = groupBy(descriptions, "event_id");
+  const propertiesByEntityId = groupBy(properties, "entity_id");
+  return {
+    events,
+    entities,
+    descriptionsByEventId,
+    propertiesByEntityId,
+    unlinkedDescriptions: descriptions.filter((item) => !eventIds.has(item.event_id)),
+    unlinkedProperties: properties.filter((item) => !entityIds.has(item.entity_id)),
+  };
+}
+
+function groupBy(items, key) {
+  const grouped = new Map();
+  items.forEach((item) => {
+    const value = item[key];
+    if (!value) return;
+    if (!grouped.has(value)) {
+      grouped.set(value, []);
+    }
+    grouped.get(value).push(item);
+  });
+  return grouped;
+}
+
+function entitySummary(entity) {
+  return {
+    title: entity.name || entity.id || "Unnamed entity",
+    meta: [entity.entity_type, entity.identity_summary].filter(Boolean).join(" · "),
+  };
+}
+
+function eventSummary(event) {
+  return {
+    title: event.title || event.id || "Untitled event",
+    meta: [event.event_type, event.summary].filter(Boolean).join(" · "),
+  };
+}
+
+function entityDetailRows(entity, properties) {
+  const rows = [];
+  if (entity.identity_summary) {
+    rows.push(entity.identity_summary);
+  }
+  properties.forEach((property) => {
+    rows.push(property.content || property.id || "");
+  });
+  return rows.filter(Boolean);
+}
+
+function eventDetailRows(event, descriptions) {
+  const rows = [];
+  if (event.summary) {
+    rows.push(event.summary);
+  }
+  descriptions.forEach((description) => {
+    rows.push(description.content || description.id || "");
+  });
+  return rows.filter(Boolean);
 }
 
 function resetCheckpoints() {
