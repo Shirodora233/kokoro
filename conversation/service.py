@@ -11,6 +11,7 @@ from llm.config import LLMConfig
 from llm.interfaces import ChatClient, ChatMessageParam
 from llm.openai_client import OpenAIChatClient
 from memory import (
+    ActiveMemoryContext,
     ContextAction,
     ConversationContextState,
     LLMMemoryExtractor,
@@ -20,8 +21,10 @@ from memory import (
     MemoryExtractionPromptBuilder,
     MemoryInputMessage,
     MemoryContextRetriever,
+    MemoryRecord,
     MemoryRuntimeConfig,
     MemorySearchResult,
+    MemorySourceRef,
     MemoryStore,
     MemorySystem,
     MemoryTurnCommitInput,
@@ -848,6 +851,7 @@ class ConversationService:
             total_messages=len(messages),
         )
         active_messages = messages[context_start_index:]
+        active_memory_context = self._restore_active_context_if_needed(session)
         return MemoryTurnInput(
             user_id=session.user_id,
             session_id=session.id,
@@ -862,6 +866,7 @@ class ConversationService:
                 max_context_messages=session.max_context_messages,
                 active_message_ids=[message.id for message in active_messages],
             ),
+            active_memory_context=active_memory_context,
             metadata={
                 "visible_session_scopes": self._visible_session_scopes(session.id),
             },
@@ -980,6 +985,64 @@ class ConversationService:
         if hasattr(self.store, "checkpoints") and hasattr(self.store, "database"):
             return self.store
         return None
+
+    def _restore_active_context_if_needed(
+        self,
+        session: ChatSession,
+    ) -> ActiveMemoryContext | None:
+        current = self._current_active_context(session)
+        if current is not None and _active_context_has_records(current):
+            return None
+
+        postgres_store = self._postgres_store()
+        if postgres_store is None:
+            return None
+        checkpoints = postgres_store.checkpoints.list_visible_checkpoints(
+            session.id,
+            limit=1,
+        )
+        if not checkpoints:
+            return None
+        checkpoint = checkpoints[0]
+        restored = _active_memory_context_from_record(
+            checkpoint.active_memory_snapshot,
+            metadata={
+                "restored_from_checkpoint_id": checkpoint.id,
+                "restored_from_checkpoint_sequence": checkpoint.sequence,
+            },
+        )
+        if not _active_context_has_records(restored):
+            return None
+
+        active_cache = getattr(self.memory_system, "active_cache", None)
+        set_context = getattr(active_cache, "set", None)
+        if callable(set_context):
+            try:
+                restored = set_context(
+                    user_id=session.user_id,
+                    session_id=session.id,
+                    context=restored,
+                )
+            except Exception as error:
+                LOGGER.debug("Active memory context cache restore failed: %s", error)
+        return restored
+
+    def _current_active_context(
+        self,
+        session: ChatSession,
+    ) -> ActiveMemoryContext | None:
+        get_active_context = getattr(self.memory_system, "get_active_context", None)
+        if not callable(get_active_context):
+            return None
+        try:
+            context = get_active_context(
+                user_id=session.user_id,
+                session_id=session.id,
+            )
+        except Exception as error:
+            LOGGER.debug("Active memory context lookup failed: %s", error)
+            return None
+        return context if isinstance(context, ActiveMemoryContext) else None
 
     def _visible_session_scopes(self, session_id: str) -> list[dict[str, Any]]:
         postgres_store = self._postgres_store()
@@ -1137,6 +1200,101 @@ def _sanitized_memory_debug_trace(payload: dict[str, Any]) -> dict[str, Any]:
                     if isinstance(message, dict)
                 ]
     return sanitized
+
+
+def _active_memory_context_from_record(
+    payload: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> ActiveMemoryContext:
+    context = _dict(payload)
+    context_metadata = dict(_dict(context.get("metadata")))
+    context_metadata.update(metadata or {})
+    last_refreshed_at_message_id = context.get("last_refreshed_at_message_id")
+    return ActiveMemoryContext(
+        event_memories=_memory_records_from_record(context.get("event_memories")),
+        entity_memories=_memory_records_from_record(context.get("entity_memories")),
+        property_memories=_memory_records_from_record(context.get("property_memories")),
+        other_memories=_memory_records_from_record(context.get("other_memories")),
+        last_refreshed_at_message_id=(
+            last_refreshed_at_message_id
+            if isinstance(last_refreshed_at_message_id, str)
+            else None
+        ),
+        metadata=context_metadata,
+    )
+
+
+def _active_context_has_records(context: ActiveMemoryContext) -> bool:
+    return any(
+        (
+            context.event_memories,
+            context.entity_memories,
+            context.property_memories,
+            context.other_memories,
+        )
+    )
+
+
+def _memory_records_from_record(value: Any) -> list[MemoryRecord]:
+    records: list[MemoryRecord] = []
+    if not isinstance(value, list):
+        return records
+    for item in value:
+        record = _memory_record_from_record(item)
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def _memory_record_from_record(value: Any) -> MemoryRecord | None:
+    raw = _dict(value)
+    memory_type = raw.get("memory_type")
+    if memory_type not in {
+        "event",
+        "description",
+        "entity",
+        "property",
+        "link",
+        "time_ref",
+        "time_link",
+        "summary",
+    }:
+        return None
+    record_id = raw.get("id")
+    text = raw.get("text")
+    return MemoryRecord(
+        id=record_id if isinstance(record_id, str) else None,
+        memory_type=memory_type,
+        text=text if isinstance(text, str) else "",
+        source_refs=_memory_source_refs_from_record(raw.get("source_refs")),
+        metadata=dict(_dict(raw.get("metadata"))),
+    )
+
+
+def _memory_source_refs_from_record(value: Any) -> list[MemorySourceRef]:
+    source_refs: list[MemorySourceRef] = []
+    if not isinstance(value, list):
+        return source_refs
+    for item in value:
+        raw = _dict(item)
+        source_type = raw.get("source_type")
+        source_id = raw.get("source_id")
+        if not isinstance(source_type, str) or not isinstance(source_id, str):
+            continue
+        span_start = raw.get("span_start")
+        span_end = raw.get("span_end")
+        quote = raw.get("quote")
+        source_refs.append(
+            MemorySourceRef(
+                source_type=source_type,
+                source_id=source_id,
+                quote=quote if isinstance(quote, str) else None,
+                span_start=span_start if isinstance(span_start, int) else None,
+                span_end=span_end if isinstance(span_end, int) else None,
+                metadata=dict(_dict(raw.get("metadata"))),
+            )
+        )
+    return source_refs
 
 
 def _memory_debug_summary(

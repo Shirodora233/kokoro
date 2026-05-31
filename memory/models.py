@@ -239,6 +239,7 @@ class MemoryTurnSnapshot:
     candidates: list[MemoryRecord] = field(default_factory=list)
     search_result: MemorySearchResult = field(default_factory=MemorySearchResult)
     memory_context: list[MemoryContextBlock] = field(default_factory=list)
+    retrieved_memories: list[MemoryRecord] = field(default_factory=list)
     active_memory_context: ActiveMemoryContext | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 

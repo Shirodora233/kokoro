@@ -33,6 +33,7 @@ def main() -> int:
         test_atomic_turn_creates_checkpoint_and_idempotent_retry,
         test_checkpoint_failure_rolls_back_visible_state,
         test_branch_session_keeps_original_and_filters_future_memory,
+        test_prepare_lazily_restores_latest_active_context,
         test_persisted_memory_debug_trace_survives_restart,
         test_checkpoint_memory_filters_future_records,
         test_http_checkpoint_and_branch_routes,
@@ -176,6 +177,42 @@ def test_branch_session_keeps_original_and_filters_future_memory(
         _cleanup(database_url, user.id)
 
 
+def test_prepare_lazily_restores_latest_active_context(database_url: str) -> None:
+    service, _chat_client = _service(
+        database_url,
+        [[candidate("entity", "LazyRestoreOnly", "cand_lazy")]],
+    )
+    user = service.create_user(USERNAME)
+    session = service.start_session(user.id)
+
+    try:
+        service.send_message(session.id, "remember LazyRestoreOnly")
+        restored_extractor = _CapturingExtractor([[]])
+        restarted, _ = _service(
+            database_url,
+            [],
+            extractor=restored_extractor,
+        )
+
+        restarted.send_message(session.id, "continue")
+
+        assert restored_extractor.active_contexts
+        restored_context = restored_extractor.active_contexts[0]
+        assert restored_context is not None
+        assert any(
+            record.text == "LazyRestoreOnly"
+            for record in restored_context.entity_memories
+        )
+        latest_checkpoint = restarted.list_checkpoints(session.id)[-1]
+        active_snapshot = latest_checkpoint.active_memory_snapshot
+        assert any(
+            record.get("text") == "LazyRestoreOnly"
+            for record in active_snapshot.get("entity_memories", [])
+        )
+    finally:
+        _cleanup(database_url, user.id)
+
+
 def test_persisted_memory_debug_trace_survives_restart(database_url: str) -> None:
     service, _chat_client = _service(
         database_url,
@@ -298,6 +335,7 @@ def test_http_checkpoint_and_branch_routes(database_url: str) -> None:
 def _service(
     database_url: str,
     memory_batches,
+    extractor=None,
 ) -> tuple[ConversationService, "_StaticChatClient"]:
     store = PostgresConversationStore(database_url)
     store.checkpoints.fail_incomplete_turns()
@@ -306,7 +344,7 @@ def _service(
     debug_recorder = MemoryDebugRecorder()
     memory_system = InMemoryMemorySystem(
         store=memory_store,
-        extractor=SequenceMemoryExtractor(memory_batches),
+        extractor=extractor or SequenceMemoryExtractor(memory_batches),
         context_retriever=NormalizedMemoryContextRetriever(
             persistent,
             search=PostgresNormalizedMemorySearch(persistent),
@@ -371,6 +409,16 @@ def _cleanup(database_url: str, user_id: str) -> None:
         user = store.find_user_by_username(USERNAME)
         if user is not None:
             store.delete_user(user.id, cascade=True)
+
+
+class _CapturingExtractor:
+    def __init__(self, batches) -> None:
+        self.extractor = SequenceMemoryExtractor(batches)
+        self.active_contexts = []
+
+    def extract(self, turn):
+        self.active_contexts.append(turn.active_memory_context)
+        return self.extractor.extract(turn)
 
 
 class _StaticChatClient:

@@ -157,6 +157,7 @@ class InMemoryMemorySystem(MemorySystem):
             candidates=scoped_records,
             search_result=search_result,
             memory_context=retrieval_result.memory_context,
+            retrieved_memories=retrieval_result.records,
             active_memory_context=active_context,
             metadata={
                 "source": "prepare_turn",
@@ -256,6 +257,7 @@ class InMemoryMemorySystem(MemorySystem):
         active_records = [
             *created_records,
             *write_result.reused_records,
+            *self._retrieved_active_records(snapshot.retrieved_memories),
         ]
         refreshed_context = self.active_cache.refresh(
             user_id=turn.user_id,
@@ -336,6 +338,16 @@ class InMemoryMemorySystem(MemorySystem):
         parts.extend(record.text for record in active_context.property_memories)
         parts.extend(record.text for record in active_context.other_memories)
         return " ".join(part.strip() for part in parts if part and part.strip())
+
+    def _retrieved_active_records(
+        self,
+        records: Sequence[MemoryRecord],
+    ) -> list[MemoryRecord]:
+        return [
+            record
+            for record in records
+            if record.memory_type in {"event", "entity"}
+        ]
 
     def _start_debug_trace(self, turn: MemoryTurnInput) -> str | None:
         if self.debug_recorder is None:

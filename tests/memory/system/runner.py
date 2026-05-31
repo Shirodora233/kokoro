@@ -15,8 +15,12 @@ from memory import LLMMemoryExtractor, MemoryDebugRecorder, MemoryDebugService
 from memory.models import (
     MemoryContextBlock,
     MemoryInputMessage,
+    MemoryObjectRef,
+    MemoryRecord,
     MemoryRetrievalRequest,
     MemoryRetrievalResult,
+    MemorySearchHit,
+    MemorySearchRequest,
     MemorySearchResult,
     MemoryTurnCommitInput,
     MemoryTurnInput,
@@ -47,6 +51,7 @@ def main() -> int:
         test_prepare_turn_searches_without_writing,
         test_commit_turn_reuses_prepare_snapshot,
         test_commit_turn_invokes_persistence_sync,
+        test_commit_turn_keeps_retrieved_events_active,
         test_conversation_send_message_prepares_before_llm_and_commits_after,
         test_llm_extraction_debug_records_raw_and_normalized_candidates,
         test_llm_extraction_debug_marks_raw_truncation,
@@ -219,6 +224,30 @@ def test_commit_turn_invokes_persistence_sync() -> None:
     assert len(persistence_sync.calls[0].created_records) == 1
     assert persistence_sync.calls[0].created_records[0].text == "林医生"
     assert result.metadata["persistent_write"]["captured_created_count"] == 1
+
+
+def test_commit_turn_keeps_retrieved_events_active() -> None:
+    retrieved_event = MemoryRecord(
+        id="evt_existing_food",
+        memory_type="event",
+        text="美食推荐询问",
+        metadata={"normalized": True},
+    )
+    system = InMemoryMemorySystem(
+        extractor=SequenceMemoryExtractor([[]]),
+        context_retriever=_StaticContextRetriever([retrieved_event]),
+    )
+
+    result = _prepare_and_commit(system, make_turn("msg_retrieved", "继续聊吃的。"))
+    active_context = system.get_active_context(USER_ID, SESSION_ID)
+
+    assert any(
+        record.id == "evt_existing_food"
+        for record in active_context.event_memories
+    )
+    assert result.metadata["active_memory_context"]["event_memories"][0]["id"] == (
+        "evt_existing_food"
+    )
 
 
 def test_conversation_send_message_prepares_before_llm_and_commits_after() -> None:
@@ -464,6 +493,47 @@ class _CapturingPersistenceSync:
     def sync(self, write_result: MemoryWriteResult) -> _CapturedSyncResult:
         self.calls.append(write_result)
         return _CapturedSyncResult(len(write_result.created_records))
+
+
+class _StaticContextRetriever:
+    def __init__(self, records: list[MemoryRecord]) -> None:
+        self.records = records
+
+    def search(self, request: MemorySearchRequest) -> MemorySearchResult:
+        hits = [
+            MemorySearchHit(
+                object_ref=MemoryObjectRef(
+                    object_type=record.memory_type,
+                    object_id=record.id or record.text,
+                ),
+                score=1.0,
+                reason="static_test_hit",
+                matched_text=record.text,
+                record=record,
+            )
+            for record in self.records
+            if record.id
+        ]
+        return MemorySearchResult(
+            hits=hits,
+            metadata={"search": "static_context", "hit_count": len(hits)},
+        )
+
+    def retrieve_from_search(
+        self,
+        search_result: MemorySearchResult,
+        request: MemoryRetrievalRequest,
+    ) -> MemoryRetrievalResult:
+        return MemoryRetrievalResult(
+            memory_context=[
+                MemoryContextBlock(content="Relevant memories: 美食推荐询问")
+            ],
+            records=self.records,
+            metadata={"retriever": "static_context"},
+        )
+
+    def retrieve(self, request: MemoryRetrievalRequest) -> MemoryRetrievalResult:
+        return self.retrieve_from_search(self.search(MemorySearchRequest()), request)
 
 
 class _RecordingMemorySystem:
