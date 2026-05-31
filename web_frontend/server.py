@@ -156,6 +156,27 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                 messages = self.service.get_transcript(session_id)
                 return {"messages": [message.to_record() for message in messages]}
 
+            if len(parts) == 2 and parts[1] == "checkpoints" and method == "GET":
+                checkpoints = self.service.list_checkpoints(
+                    session_id=session_id,
+                    limit=self._query_int(query, "limit", 50),
+                )
+                return {
+                    "checkpoints": [
+                        checkpoint.to_record() for checkpoint in checkpoints
+                    ]
+                }
+
+            if len(parts) == 2 and parts[1] == "branches" and method == "POST":
+                checkpoint_id = self._require_text(payload, "checkpoint_id")
+                title = self._optional_text(payload, "title")
+                session = self.service.create_branch_from_checkpoint(
+                    session_id=session_id,
+                    checkpoint_id=checkpoint_id,
+                    title=title,
+                )
+                return {"session": session.to_record()}
+
             if len(parts) == 2 and parts[1] == "history" and method == "GET":
                 page = self.service.get_session_history(
                     session_id=session_id,
@@ -202,6 +223,7 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                     session_id=session_id,
                     content=content,
                     user_id=user_id,
+                    idempotency_key=self._optional_text(payload, "idempotency_key"),
                 )
                 response = {
                     "user_message": user_message.to_record(),
@@ -217,6 +239,19 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                         trace.get("trace_id") if trace else None
                     )
                 return response
+
+        checkpoint_prefix = "/api/checkpoints/"
+        if path.startswith(checkpoint_prefix):
+            checkpoint_id = unquote(path.removeprefix(checkpoint_prefix))
+            if method == "PATCH":
+                checkpoint = self.service.update_checkpoint(
+                    checkpoint_id=checkpoint_id,
+                    label=self._optional_text(payload, "label"),
+                    metadata=payload.get("metadata")
+                    if isinstance(payload.get("metadata"), dict)
+                    else None,
+                )
+                return {"checkpoint": checkpoint.to_record()}
 
         raise ValueError(f"Unsupported route: {method} {path}")
 

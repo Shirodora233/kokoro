@@ -177,6 +177,13 @@ class InMemoryMemoryWritePlanApplier:
             metadata.setdefault("user_id", request.user_id)
         if request.session_id is not None:
             metadata.setdefault("session_id", request.session_id)
+        for key in (
+            "created_turn_id",
+            "created_checkpoint_id",
+            "created_checkpoint_sequence",
+        ):
+            if key in request.metadata:
+                metadata.setdefault(key, request.metadata[key])
         metadata["write_action"] = operation.action
         metadata["write_reason"] = operation.reason
         if operation.relation_type:

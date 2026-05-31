@@ -117,6 +117,7 @@ class InMemoryMemorySystem(MemorySystem):
             active_memory_context=active_context,
             limit=32,
             metadata={
+                **dict(turn.metadata),
                 "source": "prepare_turn",
                 "debug_trace_id": trace_id,
             },
@@ -131,6 +132,7 @@ class InMemoryMemorySystem(MemorySystem):
             active_memory_context=active_context,
             limit=8,
             metadata={
+                **dict(turn.metadata),
                 "source": "prepare_turn",
                 "debug_trace_id": trace_id,
             },
@@ -172,9 +174,33 @@ class InMemoryMemorySystem(MemorySystem):
         )
 
     def commit_turn(self, commit: MemoryTurnCommitInput) -> MemoryTurnResult:
+        return self._commit_turn(commit)
+
+    def commit_turn_with_writers(
+        self,
+        commit: MemoryTurnCommitInput,
+        write_applier: MemoryWritePlanApplier,
+        persistence_sync: MemoryWriteResultPersistenceSync | None,
+    ) -> MemoryTurnResult:
+        return self._commit_turn(
+            commit,
+            write_applier=write_applier,
+            persistence_sync=persistence_sync,
+        )
+
+    def _commit_turn(
+        self,
+        commit: MemoryTurnCommitInput,
+        write_applier: MemoryWritePlanApplier | None = None,
+        persistence_sync: MemoryWriteResultPersistenceSync | None = None,
+    ) -> MemoryTurnResult:
         snapshot = commit.snapshot
         turn = snapshot.turn
         scoped_records = snapshot.candidates
+        selected_write_applier = write_applier or self.write_applier
+        selected_persistence_sync = (
+            persistence_sync if persistence_sync is not None else self.persistence_sync
+        )
         active_context = snapshot.active_memory_context or self.active_cache.get(
             user_id=turn.user_id,
             session_id=turn.session_id,
@@ -198,10 +224,11 @@ class InMemoryMemorySystem(MemorySystem):
                         if commit.assistant_message is not None
                         else None
                     ),
+                    **dict(commit.metadata),
                 },
             )
         )
-        write_result = self.write_applier.apply(
+        write_result = selected_write_applier.apply(
             MemoryWriteRequest(
                 plan=write_plan,
                 user_id=turn.user_id,
@@ -213,10 +240,15 @@ class InMemoryMemorySystem(MemorySystem):
                         if commit.assistant_message is not None
                         else None
                     ),
+                    **dict(commit.metadata),
                 },
             )
         )
-        persistent_write_metadata = self._sync_persistent_memory(write_result)
+        persistent_write_metadata = self._sync_persistent_memory(
+            write_result,
+            persistence_sync=selected_persistence_sync,
+            strict=persistence_sync is not None,
+        )
         created_records = [
             *write_result.created_records,
             *write_result.attached_records,
@@ -239,6 +271,7 @@ class InMemoryMemorySystem(MemorySystem):
             memory_context=snapshot.memory_context,
             context_actions=context_actions,
             created_memories=created_records,
+            updated_memories=write_result.reused_records,
             metadata={
                 "memory_runtime": self.__class__.__name__,
                 "memory_store": self.store.__class__.__name__,
@@ -358,14 +391,19 @@ class InMemoryMemorySystem(MemorySystem):
     def _sync_persistent_memory(
         self,
         write_result: "MemoryWriteResult",
+        persistence_sync: MemoryWriteResultPersistenceSync | None = None,
+        strict: bool = False,
     ) -> dict[str, object] | None:
-        if self.persistence_sync is None:
+        selected_persistence_sync = persistence_sync
+        if selected_persistence_sync is None:
             return None
         try:
-            return self.persistence_sync.sync(write_result).to_record()
+            return selected_persistence_sync.sync(write_result).to_record()
         except Exception as error:
+            if strict:
+                raise
             LOGGER.warning("Persistent memory sync failed: %s", error)
             return {
                 "error": str(error),
-                "sync": self.persistence_sync.__class__.__name__,
+                "sync": selected_persistence_sync.__class__.__name__,
             }

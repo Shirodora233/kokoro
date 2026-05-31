@@ -20,6 +20,7 @@
 - `Property` 来源于 `Event`、`Description` 和 `messages`。
 - 一个 `Entity` 被多个 `Property` 描述。
 - 记忆的来源、推导过程和失效过程都可审计。
+- 从 conversation checkpoint 派生 branch session 时，只读取该 checkpoint 当时可见的记忆。
 
 ## 2. 总体分层
 
@@ -68,6 +69,22 @@
 如果后续发现一条消息里包含太多独立事实，可以再引入可选的 `message_sections` 或 `source_span`。第一阶段不强制切分，避免记忆系统刚开始就被 section 管理复杂度绑住。
 
 不要再使用含糊的 `raw_msg_id` 或 `conversation_id`。当前系统中等价概念分别是 `message_id` 和 `session_id`。
+
+### 3.1 Checkpoint 与 Branch 可见性
+
+conversation 会在每个 assistant 回复完成后创建一个 checkpoint。可持久化记忆应记录：
+
+- `created_turn_id`：哪一轮对话产生了这条记忆。
+- `created_checkpoint_id`：哪一个稳定完成点让这条记忆变为可见。
+- `created_checkpoint_sequence`：该 checkpoint 在 session 可见消息序列中的位置。
+
+当从某个 checkpoint 创建 branch session 时，branch 的记忆可见性规则是：
+
+- 当前 branch session 后续产生的记忆全部可见。
+- 祖先 session 只可见 `created_checkpoint_sequence <= base_checkpoint.sequence` 的记忆。
+- `session_id IS NULL` 的 global/user 记忆仍按 user scope 可见。
+
+这套规则避免回档时删除原有会话或记忆，也避免 branch 读到原 session 在 fork 之后产生的事实。
 
 ### 3.2 强制约束
 

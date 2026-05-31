@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Sequence, cast
 
@@ -24,6 +25,7 @@ class PostgresMemoryStore:
         self,
         database_url: str | None = None,
         database: PostgresMemoryDatabase | None = None,
+        connection: Any | None = None,
         ensure_schema: bool = True,
     ) -> None:
         if database is None:
@@ -31,6 +33,7 @@ class PostgresMemoryStore:
                 raise ValueError("database_url is required")
             database = PostgresMemoryDatabase(database_url)
         self.database = database
+        self.connection = connection
         if ensure_schema:
             self.ensure_schema()
 
@@ -39,22 +42,27 @@ class PostgresMemoryStore:
 
     def save_records(self, records: Sequence[MemoryRecord]) -> Sequence[MemoryRecord]:
         stored_records: list[MemoryRecord] = []
-        with self.database.connect() as connection:
+        with self._connect() as connection:
             for record in records:
                 stored_record = self._record_with_id(record)
                 metadata = dict(stored_record.metadata)
                 connection.execute(
                     """
                     INSERT INTO memory_records (
-                        id, memory_type, text, user_id, session_id, metadata
+                        id, memory_type, text, user_id, session_id, metadata,
+                        created_turn_id, created_checkpoint_id,
+                        created_checkpoint_sequence
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         memory_type = EXCLUDED.memory_type,
                         text = EXCLUDED.text,
                         user_id = EXCLUDED.user_id,
                         session_id = EXCLUDED.session_id,
                         metadata = EXCLUDED.metadata,
+                        created_turn_id = EXCLUDED.created_turn_id,
+                        created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                        created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                         updated_at = NOW()
                     """,
                     (
@@ -64,6 +72,9 @@ class PostgresMemoryStore:
                         _metadata_string(metadata, "user_id"),
                         _metadata_string(metadata, "session_id"),
                         Jsonb(metadata),
+                        _metadata_string(metadata, "created_turn_id"),
+                        _metadata_string(metadata, "created_checkpoint_id"),
+                        _metadata_int(metadata, "created_checkpoint_sequence"),
                     ),
                 )
                 connection.execute(
@@ -97,7 +108,7 @@ class PostgresMemoryStore:
         ids = [record_id for record_id in record_ids if record_id]
         if not ids:
             return []
-        with self.database.connect() as connection:
+        with self._connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM memory_records
@@ -144,7 +155,7 @@ class PostgresMemoryStore:
             query += " LIMIT %s"
             params.append(max(0, limit))
 
-        with self.database.connect() as connection:
+        with self._connect() as connection:
             rows = connection.execute(query, tuple(params)).fetchall()
             source_refs = self._load_source_refs(
                 connection,
@@ -156,8 +167,16 @@ class PostgresMemoryStore:
         ]
 
     def clear(self) -> None:
-        with self.database.connect() as connection:
+        with self._connect() as connection:
             connection.execute("DELETE FROM memory_records")
+
+    @contextmanager
+    def _connect(self) -> Iterator[Any]:
+        if self.connection is not None:
+            yield self.connection
+            return
+        with self.database.connect() as connection:
+            yield connection
 
     def _record_with_id(self, record: MemoryRecord) -> MemoryRecord:
         if record.id:
@@ -213,6 +232,11 @@ def _record_from_row(
 def _metadata_string(metadata: Mapping[str, Any], key: str) -> str | None:
     value = metadata.get(key)
     return value if isinstance(value, str) else None
+
+
+def _metadata_int(metadata: Mapping[str, Any], key: str) -> int | None:
+    value = metadata.get(key)
+    return value if isinstance(value, int) else None
 
 
 def _metadata_dict(value: object) -> dict[str, Any]:

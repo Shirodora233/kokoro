@@ -58,6 +58,9 @@ class PersistentEvent:
     source_refs: list[PersistentSourceRef] = field(default_factory=list)
     confidence: Confidence = "medium"
     importance: Importance = "medium"
+    created_turn_id: str | None = None
+    created_checkpoint_id: str | None = None
+    created_checkpoint_sequence: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -75,6 +78,9 @@ class PersistentDescription:
     source_refs: list[PersistentSourceRef] = field(default_factory=list)
     confidence: Confidence = "medium"
     importance: Importance = "low"
+    created_turn_id: str | None = None
+    created_checkpoint_id: str | None = None
+    created_checkpoint_sequence: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -94,6 +100,9 @@ class PersistentEntity:
     source_refs: list[PersistentSourceRef] = field(default_factory=list)
     confidence: Confidence = "medium"
     importance: Importance = "medium"
+    created_turn_id: str | None = None
+    created_checkpoint_id: str | None = None
+    created_checkpoint_sequence: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -111,6 +120,9 @@ class PersistentProperty:
     source_refs: list[PersistentSourceRef] = field(default_factory=list)
     confidence: Confidence = "medium"
     importance: Importance = "medium"
+    created_turn_id: str | None = None
+    created_checkpoint_id: str | None = None
+    created_checkpoint_sequence: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -126,6 +138,9 @@ class PersistentLink:
     reason: str | None = None
     source_refs: list[PersistentSourceRef] = field(default_factory=list)
     confidence: Confidence = "medium"
+    created_turn_id: str | None = None
+    created_checkpoint_id: str | None = None
+    created_checkpoint_sequence: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -149,6 +164,9 @@ class PersistentTimeRef:
     duration_text: str | None = None
     recurrence_text: str | None = None
     source_refs: list[PersistentSourceRef] = field(default_factory=list)
+    created_turn_id: str | None = None
+    created_checkpoint_id: str | None = None
+    created_checkpoint_sequence: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -163,6 +181,9 @@ class PersistentTimeLink:
     time_role: str
     source_refs: list[PersistentSourceRef] = field(default_factory=list)
     confidence: Confidence = "medium"
+    created_turn_id: str | None = None
+    created_checkpoint_id: str | None = None
+    created_checkpoint_sequence: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:

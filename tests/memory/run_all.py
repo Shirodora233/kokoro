@@ -15,6 +15,7 @@ FAST_SUITES = [
 
 POSTGRES_SUITES = [
     "tests.memory.persistence.runner",
+    "tests.conversation.checkpoint_runner",
 ]
 
 REAL_LLM_SUITES = [

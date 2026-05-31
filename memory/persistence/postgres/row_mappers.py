@@ -39,6 +39,9 @@ def event_from_row(
         source_refs=source_refs,
         confidence=cast(Confidence, row["confidence"]),
         importance=cast(Importance, row["importance"]),
+        created_turn_id=row.get("created_turn_id"),
+        created_checkpoint_id=row.get("created_checkpoint_id"),
+        created_checkpoint_sequence=row.get("created_checkpoint_sequence"),
         metadata=_metadata_dict(row["metadata"]),
     )
 
@@ -57,6 +60,9 @@ def description_from_row(
         source_refs=source_refs,
         confidence=cast(Confidence, row["confidence"]),
         importance=cast(Importance, row["importance"]),
+        created_turn_id=row.get("created_turn_id"),
+        created_checkpoint_id=row.get("created_checkpoint_id"),
+        created_checkpoint_sequence=row.get("created_checkpoint_sequence"),
         metadata=_metadata_dict(row["metadata"]),
     )
 
@@ -77,6 +83,9 @@ def entity_from_row(
         source_refs=source_refs,
         confidence=cast(Confidence, row["confidence"]),
         importance=cast(Importance, row["importance"]),
+        created_turn_id=row.get("created_turn_id"),
+        created_checkpoint_id=row.get("created_checkpoint_id"),
+        created_checkpoint_sequence=row.get("created_checkpoint_sequence"),
         metadata=_metadata_dict(row["metadata"]),
     )
 
@@ -95,6 +104,9 @@ def property_from_row(
         source_refs=source_refs,
         confidence=cast(Confidence, row["confidence"]),
         importance=cast(Importance, row["importance"]),
+        created_turn_id=row.get("created_turn_id"),
+        created_checkpoint_id=row.get("created_checkpoint_id"),
+        created_checkpoint_sequence=row.get("created_checkpoint_sequence"),
         metadata=_metadata_dict(row["metadata"]),
     )
 
@@ -117,6 +129,9 @@ def link_from_row(
         reason=row["reason"],
         source_refs=source_refs,
         confidence=cast(Confidence, row["confidence"]),
+        created_turn_id=row.get("created_turn_id"),
+        created_checkpoint_id=row.get("created_checkpoint_id"),
+        created_checkpoint_sequence=row.get("created_checkpoint_sequence"),
         metadata=_metadata_dict(row["metadata"]),
     )
 
@@ -141,6 +156,9 @@ def time_ref_from_row(
         duration_text=row["duration_text"],
         recurrence_text=row["recurrence_text"],
         source_refs=source_refs,
+        created_turn_id=row.get("created_turn_id"),
+        created_checkpoint_id=row.get("created_checkpoint_id"),
+        created_checkpoint_sequence=row.get("created_checkpoint_sequence"),
         metadata=_metadata_dict(row["metadata"]),
     )
 
@@ -159,6 +177,9 @@ def time_link_from_row(
         time_role=row["time_role"],
         source_refs=source_refs,
         confidence=cast(Confidence, row["confidence"]),
+        created_turn_id=row.get("created_turn_id"),
+        created_checkpoint_id=row.get("created_checkpoint_id"),
+        created_checkpoint_sequence=row.get("created_checkpoint_sequence"),
         metadata=_metadata_dict(row["metadata"]),
     )
 

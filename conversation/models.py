@@ -145,3 +145,110 @@ class Message:
 
     def to_record(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class ConversationTurn:
+    id: str
+    session_id: str
+    user_message_id: str | None = None
+    assistant_message_id: str | None = None
+    checkpoint_id: str | None = None
+    status: str = "llm_running"
+    idempotency_key: str | None = None
+    debug_trace_id: str | None = None
+    memory_status: str = "not_run"
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        session_id: str,
+        user_message_id: str | None = None,
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "ConversationTurn":
+        now = utc_now()
+        return cls(
+            id=new_id("turn"),
+            session_id=session_id,
+            user_message_id=user_message_id,
+            idempotency_key=idempotency_key,
+            metadata=metadata or {},
+            created_at=now,
+            updated_at=now,
+        )
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "ConversationTurn":
+        return cls(**record)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ConversationCheckpoint:
+    id: str
+    session_id: str
+    turn_id: str | None
+    parent_checkpoint_id: str | None
+    assistant_message_id: str | None
+    sequence: int
+    label: str | None = None
+    session_snapshot: dict[str, Any] = field(default_factory=dict)
+    active_memory_snapshot: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        session_id: str,
+        sequence: int,
+        turn_id: str | None = None,
+        parent_checkpoint_id: str | None = None,
+        assistant_message_id: str | None = None,
+        session_snapshot: dict[str, Any] | None = None,
+        active_memory_snapshot: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "ConversationCheckpoint":
+        return cls(
+            id=new_id("chk"),
+            session_id=session_id,
+            turn_id=turn_id,
+            parent_checkpoint_id=parent_checkpoint_id,
+            assistant_message_id=assistant_message_id,
+            sequence=sequence,
+            session_snapshot=session_snapshot or {},
+            active_memory_snapshot=active_memory_snapshot or {},
+            metadata=metadata or {},
+        )
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "ConversationCheckpoint":
+        return cls(**record)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SessionBranch:
+    session_id: str
+    root_session_id: str
+    parent_session_id: str
+    base_checkpoint_id: str
+    base_sequence: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "SessionBranch":
+        return cls(**record)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)

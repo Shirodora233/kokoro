@@ -32,12 +32,21 @@ from memory import (
     NormalizedMemoryContextRetriever,
     PostgresNormalizedMemorySearch,
     InMemoryMemorySystem,
+    InMemoryMemoryWritePlanApplier,
 )
 
 from .config import ConversationRuntimeConfig, StorageConfig, default_data_dir
 from .context import ModelContext, PaginatedMessages, SessionManager
 from .interfaces import ConversationStore
-from .models import ChatSession, Message, User, utc_now
+from .models import (
+    ChatSession,
+    ConversationCheckpoint,
+    ConversationTurn,
+    Message,
+    SessionBranch,
+    User,
+    utc_now,
+)
 from .storage import JsonConversationStore
 
 LOGGER = logging.getLogger(__name__)
@@ -86,6 +95,7 @@ class ConversationService:
             from memory.storage.postgres import PostgresMemoryStore
 
             store = PostgresConversationStore(storage_config.database_url or "")
+            store.checkpoints.fail_incomplete_turns()
             memory_store = PostgresMemoryStore(storage_config.database_url or "")
             persistent_repository = PostgresPersistentMemoryRepository(
                 storage_config.database_url or ""
@@ -215,11 +225,21 @@ class ConversationService:
         content: str,
         user_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> tuple[Message, Message]:
         session = self._require_session(session_id)
         author_id = user_id or session.user_id
         if author_id != session.user_id:
             raise ValueError("Only the session owner can send messages in this store")
+
+        if self._checkpointing_supported():
+            return self._send_message_postgres_atomic(
+                session=session,
+                content=content,
+                user_id=author_id,
+                metadata=metadata,
+                idempotency_key=idempotency_key,
+            )
 
         user_message = self.store.append_message(
             Message.create(
@@ -260,6 +280,272 @@ class ConversationService:
         self._apply_memory_context_actions(memory_commit.context_actions)
         return user_message, assistant_message
 
+    def _send_message_postgres_atomic(
+        self,
+        session: ChatSession,
+        content: str,
+        user_id: str,
+        metadata: dict[str, Any] | None,
+        idempotency_key: str | None,
+    ) -> tuple[Message, Message]:
+        postgres_store = self._postgres_store()
+        if postgres_store is None:
+            raise NotImplementedError("Checkpointed send_message requires PostgreSQL")
+
+        if idempotency_key:
+            existing_turn = postgres_store.checkpoints.get_turn_by_idempotency_key(
+                session.id,
+                idempotency_key,
+            )
+            if existing_turn is not None:
+                if existing_turn.status == "committed":
+                    return self._messages_for_committed_turn(existing_turn)
+                raise ValueError(
+                    f"Turn with idempotency_key is {existing_turn.status}: "
+                    f"{idempotency_key}"
+                )
+
+        user_message = Message.create(
+            session_id=session.id,
+            user_id=user_id,
+            role="user",
+            content=content,
+            metadata=metadata,
+        )
+        turn = ConversationTurn.create(
+            session_id=session.id,
+            user_message_id=user_message.id,
+            idempotency_key=idempotency_key,
+        )
+        postgres_store.checkpoints.begin_turn(turn)
+
+        try:
+            base_checkpoint = postgres_store.checkpoints.latest_checkpoint(session.id)
+            memory_prepare = self._prepare_memory_turn(
+                session,
+                user_message,
+                include_unpersisted_user_message=True,
+            )
+            self._apply_memory_context_actions(memory_prepare.context_actions)
+            llm_messages = self._build_llm_context_for_pending_user(
+                session,
+                user_message,
+                memory_prepare.memory_context,
+            )
+            completion = self.chat_client.complete(
+                llm_messages,
+                model=session.model,
+                temperature=session.temperature,
+            )
+            assistant_message = Message.create(
+                session_id=session.id,
+                role="assistant",
+                content=completion.content,
+                model=completion.model or session.model or self.config.model,
+                token_usage=completion.usage,
+                metadata={"provider_message_id": completion.provider_message_id},
+            )
+            committed = self._commit_postgres_turn(
+                session=session,
+                base_checkpoint=base_checkpoint,
+                turn=turn,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                memory_prepare=memory_prepare,
+            )
+            return committed
+        except Exception as error:
+            postgres_store.checkpoints.mark_turn_failed(turn.id, str(error))
+            raise
+
+    def _commit_postgres_turn(
+        self,
+        session: ChatSession,
+        base_checkpoint: ConversationCheckpoint | None,
+        turn: ConversationTurn,
+        user_message: Message,
+        assistant_message: Message,
+        memory_prepare: MemoryTurnPrepareResult,
+    ) -> tuple[Message, Message]:
+        postgres_store = self._postgres_store()
+        if postgres_store is None:
+            raise NotImplementedError("PostgreSQL checkpoint store is required")
+
+        from memory.persistence import MemoryWriteResultPersistenceSync
+        from memory.persistence.postgres import PostgresPersistentMemoryRepository
+        from memory.storage.postgres import PostgresMemoryStore
+
+        memory_status = "not_run"
+        memory_commit: MemoryTurnResult | None = None
+        debug_trace_id = memory_prepare.metadata.get("debug_trace_id")
+        with postgres_store.database.connect() as connection:
+            try:
+                with connection.transaction():
+                    locked_session = postgres_store.checkpoints.lock_session(
+                        connection,
+                        session.id,
+                    )
+                    latest_checkpoint = (
+                        postgres_store.checkpoints.latest_checkpoint_in_connection(
+                            connection,
+                            session.id,
+                        )
+                    )
+                    if (latest_checkpoint.id if latest_checkpoint else None) != (
+                        base_checkpoint.id if base_checkpoint else None
+                    ):
+                        raise ValueError(
+                            "Session advanced while the assistant response was running"
+                        )
+
+                    user_sequence = postgres_store.checkpoints.next_sequence_in_connection(
+                        connection,
+                        session.id,
+                    )
+                    assistant_sequence = user_sequence + 1
+                    branch = postgres_store.checkpoints.get_branch_in_connection(
+                        connection,
+                        session.id,
+                    )
+                    parent_checkpoint_id = (
+                        latest_checkpoint.id
+                        if latest_checkpoint is not None
+                        else branch.base_checkpoint_id
+                        if branch is not None
+                        else None
+                    )
+                    checkpoint = ConversationCheckpoint.create(
+                        session_id=session.id,
+                        turn_id=turn.id,
+                        parent_checkpoint_id=parent_checkpoint_id,
+                        assistant_message_id=assistant_message.id,
+                        sequence=assistant_sequence,
+                        session_snapshot=locked_session.to_record(),
+                        metadata={"memory_status": "not_run"},
+                    )
+
+                    self._tag_message_for_checkpoint(
+                        user_message,
+                        turn.id,
+                        checkpoint.id,
+                        user_sequence,
+                    )
+                    self._tag_message_for_checkpoint(
+                        assistant_message,
+                        turn.id,
+                        checkpoint.id,
+                        assistant_sequence,
+                    )
+                    postgres_store.checkpoints.append_message_in_connection(
+                        connection,
+                        user_message,
+                        turn_id=turn.id,
+                        checkpoint_id=checkpoint.id,
+                        sequence=user_sequence,
+                    )
+                    postgres_store.checkpoints.append_message_in_connection(
+                        connection,
+                        assistant_message,
+                        turn_id=turn.id,
+                        checkpoint_id=checkpoint.id,
+                        sequence=assistant_sequence,
+                    )
+
+                    try:
+                        with connection.transaction():
+                            transactional_store = PostgresMemoryStore(
+                                database=getattr(self.memory_system.store, "database"),
+                                connection=connection,
+                                ensure_schema=False,
+                            )
+                            write_applier = InMemoryMemoryWritePlanApplier(
+                                transactional_store
+                            )
+                            persistence_sync = None
+                            base_sync = getattr(
+                                self.memory_system,
+                                "persistence_sync",
+                                None,
+                            )
+                            if base_sync is not None and isinstance(
+                                base_sync.repository,
+                                PostgresPersistentMemoryRepository,
+                            ):
+                                persistence_sync = MemoryWriteResultPersistenceSync(
+                                    _ConnectionPersistentMemoryRepository(
+                                        base_sync.repository,
+                                        connection,
+                                    ),
+                                    adapter=base_sync.adapter,
+                                )
+                            memory_commit = self.memory_system.commit_turn_with_writers(
+                                MemoryTurnCommitInput(
+                                    snapshot=memory_prepare.snapshot,
+                                    assistant_message=self._to_memory_input_message(
+                                        assistant_message
+                                    ),
+                                    metadata={
+                                        "source": "conversation_service",
+                                        "created_turn_id": turn.id,
+                                        "created_checkpoint_id": checkpoint.id,
+                                        "created_checkpoint_sequence": assistant_sequence,
+                                    },
+                                ),
+                                write_applier=write_applier,
+                                persistence_sync=persistence_sync,
+                            )
+                            memory_status = "committed"
+                    except Exception as error:
+                        LOGGER.warning("Memory turn commit failed: %s", error)
+                        memory_status = "failed"
+                        memory_commit = MemoryTurnResult(
+                            metadata={"error": str(error)}
+                        )
+
+                    checkpoint = ConversationCheckpoint(
+                        **{
+                            **checkpoint.to_record(),
+                            "active_memory_snapshot": (
+                                memory_commit.metadata.get("active_memory_context", {})
+                                if memory_commit is not None
+                                else {}
+                            ),
+                            "metadata": {
+                                **dict(checkpoint.metadata),
+                                "memory_status": memory_status,
+                            },
+                        }
+                    )
+                    postgres_store.checkpoints.create_checkpoint_in_connection(
+                        connection,
+                        checkpoint,
+                    )
+                    postgres_store.checkpoints.complete_turn_in_connection(
+                        connection,
+                        turn.id,
+                        user_message_id=user_message.id,
+                        assistant_message_id=assistant_message.id,
+                        checkpoint_id=checkpoint.id,
+                        debug_trace_id=(
+                            debug_trace_id
+                            if isinstance(debug_trace_id, str)
+                            else None
+                        ),
+                        memory_status=memory_status,
+                        metadata={"checkpoint_sequence": assistant_sequence},
+                    )
+                    connection.execute(
+                        "UPDATE sessions SET updated_at = %s WHERE id = %s",
+                        (utc_now(), session.id),
+                    )
+            except Exception:
+                self._restore_active_context(memory_prepare.snapshot)
+                raise
+        self._apply_memory_context_actions(
+            memory_commit.context_actions if memory_commit is not None else []
+        )
+        return user_message, assistant_message
+
     def list_users(self) -> list[User]:
         return self.store.list_users()
 
@@ -284,6 +570,90 @@ class ConversationService:
 
     def get_model_context(self, session_id: str) -> ModelContext:
         return self.sessions.get_model_context(session_id)
+
+    def list_checkpoints(
+        self,
+        session_id: str,
+        limit: int = 50,
+    ) -> list[ConversationCheckpoint]:
+        postgres_store = self._postgres_store()
+        if postgres_store is None:
+            raise NotImplementedError("Checkpoint listing requires PostgreSQL")
+        self._require_session(session_id, allow_archived=True)
+        return postgres_store.checkpoints.list_visible_checkpoints(
+            session_id,
+            limit=limit,
+        )
+
+    def update_checkpoint(
+        self,
+        checkpoint_id: str,
+        label: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ConversationCheckpoint:
+        postgres_store = self._postgres_store()
+        if postgres_store is None:
+            raise NotImplementedError("Checkpoint update requires PostgreSQL")
+        return postgres_store.checkpoints.update_checkpoint_label(
+            checkpoint_id,
+            label=label,
+            metadata=metadata,
+        )
+
+    def create_branch_from_checkpoint(
+        self,
+        session_id: str,
+        checkpoint_id: str,
+        title: str | None = None,
+    ) -> ChatSession:
+        postgres_store = self._postgres_store()
+        if postgres_store is None:
+            raise NotImplementedError("Branch sessions require PostgreSQL")
+        parent_session = self._require_session(session_id, allow_archived=True)
+        checkpoint = postgres_store.checkpoints.get_checkpoint(checkpoint_id)
+        if checkpoint is None:
+            raise ValueError(f"Unknown checkpoint_id: {checkpoint_id}")
+        visible_checkpoint_ids = {
+            item.id
+            for item in postgres_store.checkpoints.list_visible_checkpoints(
+                session_id,
+                limit=10_000,
+            )
+        }
+        if checkpoint.id not in visible_checkpoint_ids:
+            raise ValueError("checkpoint_id is not visible from session_id")
+        parent_branch = postgres_store.checkpoints.get_branch(session_id)
+        root_session_id = (
+            parent_branch.root_session_id if parent_branch else parent_session.id
+        )
+        branch_session = ChatSession.create(
+            user_id=parent_session.user_id,
+            title=title or f"{parent_session.title} branch",
+            system_prompt=parent_session.system_prompt,
+            model=parent_session.model,
+            temperature=parent_session.temperature,
+            max_context_messages=parent_session.max_context_messages,
+            context_start_index=parent_session.context_start_index,
+            metadata={
+                **dict(parent_session.metadata),
+                "branch": {
+                    "parent_session_id": parent_session.id,
+                    "base_checkpoint_id": checkpoint.id,
+                    "base_sequence": checkpoint.sequence,
+                },
+            },
+        )
+        branch = SessionBranch(
+            session_id=branch_session.id,
+            root_session_id=root_session_id,
+            parent_session_id=parent_session.id,
+            base_checkpoint_id=checkpoint.id,
+            base_sequence=checkpoint.sequence,
+        )
+        return postgres_store.checkpoints.create_branch_session(
+            branch_session,
+            branch,
+        )
 
     def set_context_start_index(
         self,
@@ -363,8 +733,13 @@ class ConversationService:
         self,
         session: ChatSession,
         user_message: Message,
+        include_unpersisted_user_message: bool = False,
     ) -> MemoryTurnPrepareResult:
-        turn = self._build_memory_turn_input(session, user_message)
+        turn = self._build_memory_turn_input(
+            session,
+            user_message,
+            include_unpersisted_user_message=include_unpersisted_user_message,
+        )
         try:
             return self.memory_system.prepare_turn(turn)
         except Exception as error:
@@ -402,8 +777,11 @@ class ConversationService:
         self,
         session: ChatSession,
         user_message: Message,
+        include_unpersisted_user_message: bool = False,
     ) -> MemoryTurnInput:
         messages = self.store.list_messages(session.id)
+        if include_unpersisted_user_message:
+            messages = [*messages, user_message]
         context_start_index = self._clamp_context_start_index(
             session.context_start_index,
             total_messages=len(messages),
@@ -423,6 +801,9 @@ class ConversationService:
                 max_context_messages=session.max_context_messages,
                 active_message_ids=[message.id for message in active_messages],
             ),
+            metadata={
+                "visible_session_scopes": self._visible_session_scopes(session.id),
+            },
         )
 
     def _to_memory_input_message(self, message: Message) -> MemoryInputMessage:
@@ -456,6 +837,32 @@ class ConversationService:
             return messages
         insert_at = 1 if messages and messages[0]["role"] == "system" else 0
         return [*messages[:insert_at], memory_message, *messages[insert_at:]]
+
+    def _build_llm_context_for_pending_user(
+        self,
+        session: ChatSession,
+        user_message: Message,
+        memory_context: list[MemoryContextBlock] | None = None,
+    ) -> list[ChatMessageParam]:
+        committed_messages = self.store.list_messages(session.id)
+        messages = [*committed_messages, user_message]
+        context_start_index = self._clamp_context_start_index(
+            session.context_start_index,
+            total_messages=len(messages),
+        )
+        llm_messages: list[ChatMessageParam] = []
+        if session.system_prompt:
+            llm_messages.append({"role": "system", "content": session.system_prompt})
+        for message in messages[context_start_index:]:
+            if message.role in {"system", "user", "assistant"}:
+                llm_messages.append(
+                    {"role": message.role, "content": message.content}
+                )
+        memory_message = self._render_memory_context(memory_context or [])
+        if not memory_message:
+            return llm_messages
+        insert_at = 1 if llm_messages and llm_messages[0]["role"] == "system" else 0
+        return [*llm_messages[:insert_at], memory_message, *llm_messages[insert_at:]]
 
     def _render_memory_context(
         self,
@@ -505,6 +912,66 @@ class ConversationService:
             user_id = user_id or session.user_id
         return user_id
 
+    def _checkpointing_supported(self) -> bool:
+        return self._postgres_store() is not None
+
+    def _postgres_store(self):
+        if hasattr(self.store, "checkpoints") and hasattr(self.store, "database"):
+            return self.store
+        return None
+
+    def _visible_session_scopes(self, session_id: str) -> list[dict[str, Any]]:
+        postgres_store = self._postgres_store()
+        if postgres_store is None:
+            return [{"session_id": session_id, "max_checkpoint_sequence": None}]
+        return postgres_store.checkpoints.branch_memory_scope(session_id)
+
+    def _messages_for_committed_turn(
+        self,
+        turn: ConversationTurn,
+    ) -> tuple[Message, Message]:
+        messages = self.store.list_messages(turn.session_id)
+        by_id = {message.id: message for message in messages}
+        user_message = (
+            by_id.get(turn.user_message_id) if turn.user_message_id else None
+        )
+        assistant_message = (
+            by_id.get(turn.assistant_message_id)
+            if turn.assistant_message_id
+            else None
+        )
+        if user_message is None or assistant_message is None:
+            raise ValueError("Committed turn messages are missing")
+        return user_message, assistant_message
+
+    def _tag_message_for_checkpoint(
+        self,
+        message: Message,
+        turn_id: str,
+        checkpoint_id: str,
+        sequence: int,
+    ) -> None:
+        message.metadata = {
+            **dict(message.metadata),
+            "turn_id": turn_id,
+            "checkpoint_id": checkpoint_id,
+            "sequence": sequence,
+            "status": "active",
+        }
+
+    def _restore_active_context(self, snapshot: MemoryTurnSnapshot) -> None:
+        active_cache = getattr(self.memory_system, "active_cache", None)
+        if active_cache is None:
+            return
+        turn = snapshot.turn
+        if snapshot.active_memory_context is None:
+            return
+        active_cache.set(
+            user_id=turn.user_id,
+            session_id=turn.session_id,
+            context=snapshot.active_memory_context,
+        )
+
     def _default_memory_debug_service(
         self,
         memory_system: MemorySystem,
@@ -517,3 +984,12 @@ class ConversationService:
             memory_store=getattr(memory_system, "store", None),
             active_cache=getattr(memory_system, "active_cache", None),
         )
+
+
+class _ConnectionPersistentMemoryRepository:
+    def __init__(self, repository: Any, connection: Any) -> None:
+        self.repository = repository
+        self.connection = connection
+
+    def save_bundle(self, bundle):
+        return self.repository.save_bundle_in_connection(self.connection, bundle)

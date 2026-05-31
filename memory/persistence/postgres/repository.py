@@ -60,28 +60,35 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
 
     def save_bundle(self, bundle: PersistentMemoryBundle) -> PersistentMemoryBundle:
         with self.database.connect() as connection:
-            events = [self._save_event(connection, event) for event in bundle.events]
-            entities = [
-                self._save_entity(connection, entity)
-                for entity in bundle.entities
-            ]
-            time_refs = [
-                self._save_time_ref(connection, time_ref)
-                for time_ref in bundle.time_refs
-            ]
-            descriptions = [
-                self._save_description(connection, description)
-                for description in bundle.descriptions
-            ]
-            properties = [
-                self._save_property(connection, memory_property)
-                for memory_property in bundle.properties
-            ]
-            links = [self._save_link(connection, link) for link in bundle.links]
-            time_links = [
-                self._save_time_link(connection, time_link)
-                for time_link in bundle.time_links
-            ]
+            return self.save_bundle_in_connection(connection, bundle)
+
+    def save_bundle_in_connection(
+        self,
+        connection: Any,
+        bundle: PersistentMemoryBundle,
+    ) -> PersistentMemoryBundle:
+        events = [self._save_event(connection, event) for event in bundle.events]
+        entities = [
+            self._save_entity(connection, entity)
+            for entity in bundle.entities
+        ]
+        time_refs = [
+            self._save_time_ref(connection, time_ref)
+            for time_ref in bundle.time_refs
+        ]
+        descriptions = [
+            self._save_description(connection, description)
+            for description in bundle.descriptions
+        ]
+        properties = [
+            self._save_property(connection, memory_property)
+            for memory_property in bundle.properties
+        ]
+        links = [self._save_link(connection, link) for link in bundle.links]
+        time_links = [
+            self._save_time_link(connection, time_link)
+            for time_link in bundle.time_links
+        ]
         return PersistentMemoryBundle(
             events=events,
             descriptions=descriptions,
@@ -450,9 +457,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             """
             INSERT INTO memory_events (
                 id, user_id, session_id, title, summary, event_type, status,
-                confidence, importance, metadata
+                confidence, importance, metadata, created_turn_id,
+                created_checkpoint_id, created_checkpoint_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
                 session_id = EXCLUDED.session_id,
@@ -463,6 +471,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 confidence = EXCLUDED.confidence,
                 importance = EXCLUDED.importance,
                 metadata = EXCLUDED.metadata,
+                created_turn_id = EXCLUDED.created_turn_id,
+                created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
             """,
             (
@@ -476,6 +487,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 event.confidence,
                 event.importance,
                 Jsonb(dict(event.metadata)),
+                event.created_turn_id,
+                event.created_checkpoint_id,
+                event.created_checkpoint_sequence,
             ),
         )
         stored = replace(event, id=event_id)
@@ -493,9 +507,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             """
             INSERT INTO memory_descriptions (
                 id, event_id, user_id, session_id, content, description_type,
-                confidence, importance, metadata
+                confidence, importance, metadata, created_turn_id,
+                created_checkpoint_id, created_checkpoint_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 event_id = EXCLUDED.event_id,
                 user_id = EXCLUDED.user_id,
@@ -505,6 +520,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 confidence = EXCLUDED.confidence,
                 importance = EXCLUDED.importance,
                 metadata = EXCLUDED.metadata,
+                created_turn_id = EXCLUDED.created_turn_id,
+                created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
             """,
             (
@@ -517,6 +535,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 description.confidence,
                 description.importance,
                 Jsonb(dict(description.metadata)),
+                description.created_turn_id,
+                description.created_checkpoint_id,
+                description.created_checkpoint_sequence,
             ),
         )
         stored = replace(description, id=description_id, event_id=event_id)
@@ -538,9 +559,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             """
             INSERT INTO memory_entities (
                 id, user_id, session_id, scope, name, entity_type,
-                identity_summary, aliases, confidence, importance, metadata
+                identity_summary, aliases, confidence, importance, metadata,
+                created_turn_id, created_checkpoint_id, created_checkpoint_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
                 session_id = EXCLUDED.session_id,
@@ -552,6 +574,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 confidence = EXCLUDED.confidence,
                 importance = EXCLUDED.importance,
                 metadata = EXCLUDED.metadata,
+                created_turn_id = EXCLUDED.created_turn_id,
+                created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
             """,
             (
@@ -566,6 +591,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 entity.confidence,
                 entity.importance,
                 Jsonb(dict(entity.metadata)),
+                entity.created_turn_id,
+                entity.created_checkpoint_id,
+                entity.created_checkpoint_sequence,
             ),
         )
         stored = replace(entity, id=entity_id)
@@ -583,9 +611,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             """
             INSERT INTO memory_properties (
                 id, entity_id, user_id, session_id, content, property_type,
-                confidence, importance, metadata
+                confidence, importance, metadata, created_turn_id,
+                created_checkpoint_id, created_checkpoint_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 entity_id = EXCLUDED.entity_id,
                 user_id = EXCLUDED.user_id,
@@ -595,6 +624,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 confidence = EXCLUDED.confidence,
                 importance = EXCLUDED.importance,
                 metadata = EXCLUDED.metadata,
+                created_turn_id = EXCLUDED.created_turn_id,
+                created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
             """,
             (
@@ -607,6 +639,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 memory_property.confidence,
                 memory_property.importance,
                 Jsonb(dict(memory_property.metadata)),
+                memory_property.created_turn_id,
+                memory_property.created_checkpoint_id,
+                memory_property.created_checkpoint_sequence,
             ),
         )
         stored = replace(memory_property, id=property_id, entity_id=entity_id)
@@ -628,9 +663,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             """
             INSERT INTO memory_links (
                 id, user_id, from_type, from_id, to_type, to_id,
-                relation_type, reason, confidence, metadata
+                relation_type, reason, confidence, metadata, created_turn_id,
+                created_checkpoint_id, created_checkpoint_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
                 from_type = EXCLUDED.from_type,
@@ -641,6 +677,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 reason = EXCLUDED.reason,
                 confidence = EXCLUDED.confidence,
                 metadata = EXCLUDED.metadata,
+                created_turn_id = EXCLUDED.created_turn_id,
+                created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
             """,
             (
@@ -654,6 +693,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 link.reason,
                 link.confidence,
                 Jsonb(dict(link.metadata)),
+                link.created_turn_id,
+                link.created_checkpoint_id,
+                link.created_checkpoint_sequence,
             ),
         )
         stored = replace(link, id=link_id)
@@ -672,9 +714,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 id, raw_text, time_kind, timeline_kind, certainty,
                 anchor_timezone, anchor_utc_offset, anchor_message_id,
                 resolved_start, resolved_end, granularity, description,
-                duration_text, recurrence_text, metadata
+                duration_text, recurrence_text, metadata, created_turn_id,
+                created_checkpoint_id, created_checkpoint_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 raw_text = EXCLUDED.raw_text,
                 time_kind = EXCLUDED.time_kind,
@@ -690,6 +733,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 duration_text = EXCLUDED.duration_text,
                 recurrence_text = EXCLUDED.recurrence_text,
                 metadata = EXCLUDED.metadata,
+                created_turn_id = EXCLUDED.created_turn_id,
+                created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
             """,
             (
@@ -708,6 +754,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 time_ref.duration_text,
                 time_ref.recurrence_text,
                 Jsonb(dict(time_ref.metadata)),
+                time_ref.created_turn_id,
+                time_ref.created_checkpoint_id,
+                time_ref.created_checkpoint_sequence,
             ),
         )
         stored = replace(time_ref, id=time_ref_id)
@@ -729,9 +778,10 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             """
             INSERT INTO memory_time_links (
                 id, target_type, target_id, time_ref_id, time_role,
-                confidence, metadata
+                confidence, metadata, created_turn_id, created_checkpoint_id,
+                created_checkpoint_sequence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 target_type = EXCLUDED.target_type,
                 target_id = EXCLUDED.target_id,
@@ -739,6 +789,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 time_role = EXCLUDED.time_role,
                 confidence = EXCLUDED.confidence,
                 metadata = EXCLUDED.metadata,
+                created_turn_id = EXCLUDED.created_turn_id,
+                created_checkpoint_id = EXCLUDED.created_checkpoint_id,
+                created_checkpoint_sequence = EXCLUDED.created_checkpoint_sequence,
                 updated_at = NOW()
             """,
             (
@@ -749,6 +802,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 time_link.time_role,
                 time_link.confidence,
                 Jsonb(dict(time_link.metadata)),
+                time_link.created_turn_id,
+                time_link.created_checkpoint_id,
+                time_link.created_checkpoint_sequence,
             ),
         )
         stored = replace(time_link, id=time_link_id)

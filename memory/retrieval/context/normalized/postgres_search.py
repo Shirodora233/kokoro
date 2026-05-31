@@ -248,12 +248,47 @@ class PostgresNormalizedMemorySearch:
 def _scope_conditions(request: MemorySearchRequest) -> tuple[list[str], list[object]]:
     conditions: list[str] = []
     params: list[object] = []
+    visible_scopes = _visible_session_scopes(request)
     if request.user_id is not None or request.session_id is not None:
         conditions.append("(user_id IS NULL OR user_id = %s)")
         params.append(request.user_id)
-        conditions.append("(session_id IS NULL OR session_id = %s)")
-        params.append(request.session_id)
+        if visible_scopes:
+            session_conditions = ["session_id IS NULL"]
+            for scope in visible_scopes:
+                scoped_session_id = scope.get("session_id")
+                max_sequence = scope.get("max_checkpoint_sequence")
+                if not isinstance(scoped_session_id, str):
+                    continue
+                if isinstance(max_sequence, int):
+                    session_conditions.append(
+                        """
+                        (
+                          session_id = %s
+                          AND (
+                            created_checkpoint_sequence IS NULL
+                            OR created_checkpoint_sequence <= %s
+                          )
+                        )
+                        """
+                    )
+                    params.extend([scoped_session_id, max_sequence])
+                else:
+                    session_conditions.append("session_id = %s")
+                    params.append(scoped_session_id)
+            conditions.append("(" + " OR ".join(session_conditions) + ")")
+        else:
+            conditions.append("(session_id IS NULL OR session_id = %s)")
+            params.append(request.session_id)
     return conditions, params
+
+
+def _visible_session_scopes(
+    request: MemorySearchRequest,
+) -> list[Mapping[str, Any]]:
+    raw = request.metadata.get("visible_session_scopes")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, Mapping)]
 
 
 def _search_terms(query: str) -> list[str]:

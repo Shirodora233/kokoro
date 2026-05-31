@@ -42,6 +42,13 @@ CREATE INDEX IF NOT EXISTS idx_memory_records_type
 CREATE INDEX IF NOT EXISTS idx_memory_records_updated_at
   ON memory_records(updated_at DESC);
 
+ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_records ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_memory_records_checkpoint
+  ON memory_records(session_id, created_checkpoint_sequence);
+
 CREATE INDEX IF NOT EXISTS idx_memory_source_refs_memory_record_id
   ON memory_source_refs(memory_record_id);
 

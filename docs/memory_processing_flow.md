@@ -218,8 +218,8 @@ conversation 收到动作后可以选择：
 
 一次用户消息的推荐流程：
 
-1. conversation 保存 user message。
-2. conversation 读取近期消息、当前 context state 和用户时区。
+1. conversation 生成临时 user message，但在 PostgreSQL 原子路径中先不写库。
+2. conversation 读取已提交的近期消息、当前 context state 和用户时区，并把临时 user message 追加到 memory 可见上下文末尾。
 3. conversation 调用 `memory.prepare_turn(...)`。
 4. memory 加载或刷新 `ActiveMemoryContext`。
 5. memory 把新消息、conversation context、active memory context 一起交给 extractor。
@@ -231,13 +231,16 @@ conversation 收到动作后可以选择：
 10. 如果刚执行了摘要压缩，conversation 将新摘要放在原始 conversation context 开头。
 11. conversation 构造 LLM prompt：system prompt、压缩摘要、conversation context、memory context。
 12. conversation 调用 LLM。
-13. conversation 保存 assistant message。
-14. conversation 调用 `memory.commit_turn(...)`，传入 prepare 阶段返回的 snapshot 和 assistant message。
+13. conversation 生成 assistant message。
+14. PostgreSQL backend 开启一次 transaction，锁定 session，并在同一事务中写入 user message、assistant message、memory writes 和 conversation checkpoint。
+15. conversation 调用 `memory.commit_turn(...)`，传入 prepare 阶段返回的 snapshot 和 assistant message。
 15. memory 的 `CandidateMemoryMatcher` 复用 snapshot 里的 search result 生成 direct/expanded groups。
 16. memory reconciler 根据候选和 matched groups 生成 `MemoryWritePlan`。
 17. memory writer 把 write plan 应用到当前 `MemoryStore`。
 18. 如果配置了 persistence sync，memory 把 write result 同步写入范式化持久层。
-19. memory 用新建、挂载和复用的记忆刷新 `ActiveMemoryContext`。
+19. transaction commit 成功后，memory 用新建、挂载和复用的记忆刷新进程内 `ActiveMemoryContext`。
+
+JSON backend 不提供强原子 checkpoint/branch 能力，仍使用基础对话写入流程。PostgreSQL backend 的 checkpoint/branch 语义见 `docs/conversation_checkpoint_branching.md`。
 
 commit 默认只把用户消息作为持久事实 source；assistant 回复只进入 commit metadata/context，
 避免把模型回复误当成用户事实再次写入。

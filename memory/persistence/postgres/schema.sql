@@ -192,3 +192,34 @@ CREATE INDEX IF NOT EXISTS idx_memory_sources_memory
   ON memory_sources(memory_type, memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_sources_source
   ON memory_sources(source_type, source_id);
+
+ALTER TABLE memory_events ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_events ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_events ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+ALTER TABLE memory_descriptions ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_descriptions ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_descriptions ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+ALTER TABLE memory_entities ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_entities ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_entities ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+ALTER TABLE memory_properties ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_properties ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_properties ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+ALTER TABLE memory_links ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_links ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_links ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+ALTER TABLE memory_time_refs ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_time_refs ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_time_refs ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+ALTER TABLE memory_time_links ADD COLUMN IF NOT EXISTS created_turn_id TEXT;
+ALTER TABLE memory_time_links ADD COLUMN IF NOT EXISTS created_checkpoint_id TEXT;
+ALTER TABLE memory_time_links ADD COLUMN IF NOT EXISTS created_checkpoint_sequence INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_memory_events_checkpoint
+  ON memory_events(session_id, created_checkpoint_sequence, status);
+CREATE INDEX IF NOT EXISTS idx_memory_descriptions_checkpoint
+  ON memory_descriptions(session_id, created_checkpoint_sequence, status);
+CREATE INDEX IF NOT EXISTS idx_memory_entities_checkpoint
+  ON memory_entities(session_id, created_checkpoint_sequence);
+CREATE INDEX IF NOT EXISTS idx_memory_properties_checkpoint
+  ON memory_properties(session_id, created_checkpoint_sequence, status);

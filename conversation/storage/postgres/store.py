@@ -6,6 +6,7 @@ from typing import Iterable
 
 from conversation.models import ChatSession, Message, User
 
+from .checkpoint_repository import PostgresCheckpointRepository
 from .connection import PostgresDatabase
 from .import_repository import PostgresImportRepository
 from .maintenance_repository import PostgresMaintenanceRepository
@@ -23,6 +24,7 @@ class PostgresConversationStore:
         self.users = PostgresUserRepository(self.database)
         self.sessions = PostgresSessionRepository(self.database)
         self.messages = PostgresMessageRepository(self.database)
+        self.checkpoints = PostgresCheckpointRepository(self.database)
         self.importer = PostgresImportRepository(self.database)
         self.maintenance = PostgresMaintenanceRepository(self.database)
 
@@ -63,7 +65,7 @@ class PostgresConversationStore:
         return self.messages.append_message(message)
 
     def list_messages(self, session_id: str) -> list[Message]:
-        return self.messages.list_messages(session_id)
+        return self.checkpoints.visible_messages(session_id)
 
     def delete_all(self) -> dict[str, int]:
         return self.maintenance.delete_all()

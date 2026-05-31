@@ -155,6 +155,12 @@ class MemoryRecordPersistenceAdapter:
             source_refs=_source_refs(record.source_refs),
             confidence=_confidence(metadata),
             importance=_importance(metadata, "medium"),
+            created_turn_id=_optional_string(metadata, "created_turn_id"),
+            created_checkpoint_id=_optional_string(metadata, "created_checkpoint_id"),
+            created_checkpoint_sequence=_optional_int(
+                metadata,
+                "created_checkpoint_sequence",
+            ),
             metadata=dict(metadata),
         )
 
@@ -170,6 +176,12 @@ class MemoryRecordPersistenceAdapter:
             source_refs=_source_refs(record.source_refs),
             confidence=_confidence(metadata),
             importance=_importance(metadata, "low"),
+            created_turn_id=_optional_string(metadata, "created_turn_id"),
+            created_checkpoint_id=_optional_string(metadata, "created_checkpoint_id"),
+            created_checkpoint_sequence=_optional_int(
+                metadata,
+                "created_checkpoint_sequence",
+            ),
             metadata=dict(metadata),
         )
 
@@ -187,6 +199,12 @@ class MemoryRecordPersistenceAdapter:
             source_refs=_source_refs(record.source_refs),
             confidence=_confidence(metadata),
             importance=_importance(metadata, "medium"),
+            created_turn_id=_optional_string(metadata, "created_turn_id"),
+            created_checkpoint_id=_optional_string(metadata, "created_checkpoint_id"),
+            created_checkpoint_sequence=_optional_int(
+                metadata,
+                "created_checkpoint_sequence",
+            ),
             metadata=dict(metadata),
         )
 
@@ -202,6 +220,12 @@ class MemoryRecordPersistenceAdapter:
             source_refs=_source_refs(record.source_refs),
             confidence=_confidence(metadata),
             importance=_importance(metadata, "medium"),
+            created_turn_id=_optional_string(metadata, "created_turn_id"),
+            created_checkpoint_id=_optional_string(metadata, "created_checkpoint_id"),
+            created_checkpoint_sequence=_optional_int(
+                metadata,
+                "created_checkpoint_sequence",
+            ),
             metadata=dict(metadata),
         )
 
@@ -223,6 +247,12 @@ class MemoryRecordPersistenceAdapter:
             reason=_optional_string(metadata, "write_reason"),
             source_refs=_source_refs(record.source_refs),
             confidence=_confidence(metadata),
+            created_turn_id=_optional_string(metadata, "created_turn_id"),
+            created_checkpoint_id=_optional_string(metadata, "created_checkpoint_id"),
+            created_checkpoint_sequence=_optional_int(
+                metadata,
+                "created_checkpoint_sequence",
+            ),
             metadata=dict(metadata),
         )
 
@@ -250,6 +280,12 @@ class MemoryRecordPersistenceAdapter:
             duration_text=_optional_string(metadata, "duration_text"),
             recurrence_text=_optional_string(metadata, "recurrence_text"),
             source_refs=_source_refs(record.source_refs),
+            created_turn_id=_optional_string(metadata, "created_turn_id"),
+            created_checkpoint_id=_optional_string(metadata, "created_checkpoint_id"),
+            created_checkpoint_sequence=_optional_int(
+                metadata,
+                "created_checkpoint_sequence",
+            ),
             metadata=dict(metadata),
         )
 
@@ -265,6 +301,12 @@ class MemoryRecordPersistenceAdapter:
             time_role=self._required_metadata_string(metadata, "time_role"),
             source_refs=_source_refs(record.source_refs),
             confidence=_confidence(metadata),
+            created_turn_id=_optional_string(metadata, "created_turn_id"),
+            created_checkpoint_id=_optional_string(metadata, "created_checkpoint_id"),
+            created_checkpoint_sequence=_optional_int(
+                metadata,
+                "created_checkpoint_sequence",
+            ),
             metadata=dict(metadata),
         )
 
@@ -384,6 +426,13 @@ def _source_refs(source_refs: Sequence[MemorySourceRef]) -> list[PersistentSourc
 def _optional_string(metadata: dict[str, Any], key: str) -> str | None:
     value = metadata.get(key)
     if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _optional_int(metadata: dict[str, Any], key: str) -> int | None:
+    value = metadata.get(key)
+    if isinstance(value, int):
         return value
     return None
 
