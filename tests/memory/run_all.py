@@ -23,6 +23,10 @@ REAL_LLM_SUITES = [
     "tests.memory.system_real.runner",
 ]
 
+REAL_POSTGRES_LLM_SUITES = [
+    "tests.memory.postgres_real.runner",
+]
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run memory test suites")
@@ -56,11 +60,13 @@ def main() -> int:
         suites.extend(POSTGRES_SUITES)
     if args.real_llm:
         suites.extend(REAL_LLM_SUITES)
+        if args.postgres:
+            suites.extend(REAL_POSTGRES_LLM_SUITES)
 
     failures: list[str] = []
     for suite in suites:
         command = [sys.executable, "-m", suite]
-        if suite in REAL_LLM_SUITES:
+        if suite in REAL_LLM_SUITES or suite in REAL_POSTGRES_LLM_SUITES:
             command.extend(["--env-file", args.env_file])
             if args.strict_real:
                 command.append("--strict")

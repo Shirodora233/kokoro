@@ -9,6 +9,7 @@ Memory tests are grouped by subsystem:
 - `persistence/`：PostgreSQL normalized persistence round trips.
 - `extractor_real/`：real LLM extractor behavior and reports.
 - `system_real/`：real LLM end-to-end memory runtime reports.
+- `postgres_real/`：real LLM end-to-end memory runtime with PostgreSQL normalized persistence.
 
 Run the fast deterministic suite:
 
@@ -26,6 +27,12 @@ Include real LLM tests:
 
 ```bash
 .venv/bin/python -m tests.memory.run_all --real-llm --env-file .env
+```
+
+Include the real LLM PostgreSQL persistence scenario:
+
+```bash
+.venv/bin/python -m tests.memory.run_all --postgres --real-llm --env-file .env
 ```
 
 Real LLM runs write timestamped Markdown reports under their own `reports/`
