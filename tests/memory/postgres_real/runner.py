@@ -280,6 +280,7 @@ def _checks(
     return [
         _check_no_turn_errors(turns),
         _check_no_persistent_sync_errors(turns),
+        _check_event_entity_refs_do_not_carry_properties(turns),
         _check_generic_records(generic_records),
         _check_normalized_event(normalized_rows),
         _check_normalized_food_property(normalized_rows),
@@ -306,6 +307,44 @@ def _check_no_persistent_sync_errors(turns: list[TurnCapture]) -> CheckResult:
     if errors:
         return CheckResult("PostgreSQL normalized sync 不失败", False, "; ".join(errors))
     return CheckResult("PostgreSQL normalized sync 不失败", True, "ok")
+
+
+def _check_event_entity_refs_do_not_carry_properties(
+    turns: list[TurnCapture],
+) -> CheckResult:
+    violations: list[str] = []
+    for turn in turns:
+        if not turn.llm_output:
+            continue
+        try:
+            payload = json.loads(turn.llm_output)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for event in _list_payload(payload.get("event_candidates")):
+            title = event.get("title") if isinstance(event, dict) else None
+            for entity in _list_payload(event.get("entities")):
+                if not isinstance(entity, dict):
+                    continue
+                properties = entity.get("properties")
+                if isinstance(properties, list) and properties:
+                    name = entity.get("name") or entity.get("client_id") or "<unknown>"
+                    violations.append(
+                        f"{turn.label}: event {title or '<unknown>'} entity {name} "
+                        f"has {len(properties)} nested properties"
+                    )
+    if violations:
+        return CheckResult(
+            "event.entities 只携带实体引用不携带 properties",
+            False,
+            "; ".join(violations),
+        )
+    return CheckResult(
+        "event.entities 只携带实体引用不携带 properties",
+        True,
+        "ok",
+    )
 
 
 def _check_generic_records(records: list[dict[str, Any]]) -> CheckResult:
@@ -355,6 +394,10 @@ def _check_no_duplicate_time_links(duplicates: list[dict[str, Any]]) -> CheckRes
             json.dumps(duplicates),
         )
     return CheckResult("memory_time_links 无重复自然关系", True, "ok")
+
+
+def _list_payload(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 def _load_normalized_rows(
