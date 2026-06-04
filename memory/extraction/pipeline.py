@@ -9,6 +9,7 @@ from llm.interfaces import ChatClient
 
 from ..debug import MemoryDebugRecorder, trace_id_from_metadata
 from ..models import MemoryRecord, MemoryTurnInput
+from .coalescer import MemoryCandidateCoalescer
 from .llm import LLMMemoryExtractionCallResult, LLMMemoryExtractionClient
 from .normalizer import MemoryCandidateNormalizer
 from .parser import MemoryExtractionParseError, parse_extraction_response
@@ -28,6 +29,7 @@ class LLMMemoryExtractor:
         temperature: float = 0.0,
         prompt_builder: MemoryExtractionPromptBuilder | None = None,
         llm_client: LLMMemoryExtractionClient | None = None,
+        coalescer: MemoryCandidateCoalescer | None = None,
         normalizer: MemoryCandidateNormalizer | None = None,
         validator: MemoryCandidateValidator | None = None,
         debug_recorder: MemoryDebugRecorder | None = None,
@@ -40,6 +42,7 @@ class LLMMemoryExtractor:
             temperature=temperature,
             prompt_builder=prompt_builder,
         )
+        self.coalescer = coalescer or MemoryCandidateCoalescer()
         self.normalizer = normalizer or MemoryCandidateNormalizer()
         self.validator = validator or MemoryCandidateValidator()
         self.debug_recorder = debug_recorder
@@ -60,7 +63,8 @@ class LLMMemoryExtractor:
                 parse_error=str(error),
             )
             return []
-        validation_result = self.validator.validate(candidates)
+        coalesced_candidates = self.coalescer.coalesce(candidates)
+        validation_result = self.validator.validate(coalesced_candidates)
         for error in validation_result.errors:
             LOGGER.info("Dropped invalid memory candidate: %s", error)
         records = self.normalizer.normalize(validation_result.batch, turn)

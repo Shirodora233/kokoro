@@ -1,5 +1,6 @@
 """Memory extraction implementations."""
 
+from .coalescer import MemoryCandidateCoalescer
 from .llm import LLMMemoryExtractionCallResult, LLMMemoryExtractionClient
 from .noop import NoopMemoryExtractor
 from .pipeline import LLMMemoryExtractor
@@ -10,6 +11,7 @@ __all__ = [
     "LLMMemoryExtractionClient",
     "LLMMemoryExtractionCallResult",
     "LLMMemoryExtractor",
+    "MemoryCandidateCoalescer",
     "MemoryCandidateValidator",
     "MemoryExtractionPromptBuilder",
     "NoopMemoryExtractor",

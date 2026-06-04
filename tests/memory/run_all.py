@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 FAST_SUITES = [
+    "tests.memory.extraction.runner",
     "tests.memory.retrieval.runner",
     "tests.memory.reconciliation.runner",
     "tests.memory.writing.runner",
