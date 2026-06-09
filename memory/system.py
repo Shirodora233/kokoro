@@ -28,7 +28,6 @@ from .models import (
     MemoryTurnResult,
     MemoryTurnSnapshot,
 )
-from .persistence import MemoryWriteResultPersistenceSync
 from .reconciliation import (
     DeterministicMemoryReconciler,
     MemoryReconciler,
@@ -56,7 +55,6 @@ class InMemoryMemorySystem(MemorySystem):
         candidate_matcher: CandidateMemoryMatcher | None = None,
         reconciler: MemoryReconciler | None = None,
         write_applier: MemoryWritePlanApplier | None = None,
-        persistence_sync: MemoryWriteResultPersistenceSync | None = None,
         active_cache: InMemoryActiveMemoryCache | None = None,
         context_policy: ContextPolicy | None = None,
         debug_recorder: MemoryDebugRecorder | None = None,
@@ -73,7 +71,6 @@ class InMemoryMemorySystem(MemorySystem):
         self.write_applier = (
             write_applier or InMemoryMemoryWritePlanApplier(self.store)
         )
-        self.persistence_sync = persistence_sync
         self.debug_recorder = debug_recorder
 
     def prepare_turn(self, turn: MemoryTurnInput) -> MemoryTurnPrepareResult:
@@ -181,27 +178,21 @@ class InMemoryMemorySystem(MemorySystem):
         self,
         commit: MemoryTurnCommitInput,
         write_applier: MemoryWritePlanApplier,
-        persistence_sync: MemoryWriteResultPersistenceSync | None,
     ) -> MemoryTurnResult:
         return self._commit_turn(
             commit,
             write_applier=write_applier,
-            persistence_sync=persistence_sync,
         )
 
     def _commit_turn(
         self,
         commit: MemoryTurnCommitInput,
         write_applier: MemoryWritePlanApplier | None = None,
-        persistence_sync: MemoryWriteResultPersistenceSync | None = None,
     ) -> MemoryTurnResult:
         snapshot = commit.snapshot
         turn = snapshot.turn
         scoped_records = snapshot.candidates
         selected_write_applier = write_applier or self.write_applier
-        selected_persistence_sync = (
-            persistence_sync if persistence_sync is not None else self.persistence_sync
-        )
         active_context = snapshot.active_memory_context or self.active_cache.get(
             user_id=turn.user_id,
             session_id=turn.session_id,
@@ -245,11 +236,6 @@ class InMemoryMemorySystem(MemorySystem):
                 },
             )
         )
-        persistent_write_metadata = self._sync_persistent_memory(
-            write_result,
-            persistence_sync=selected_persistence_sync,
-            strict=persistence_sync is not None,
-        )
         created_records = [
             *write_result.created_records,
             *write_result.attached_records,
@@ -282,7 +268,6 @@ class InMemoryMemorySystem(MemorySystem):
                 "candidate_matching": candidate_retrieval.to_record(),
                 "write_plan": write_plan.to_record(),
                 "write_result": write_result.to_record(),
-                "persistent_write": persistent_write_metadata,
             },
         )
 
@@ -399,23 +384,3 @@ class InMemoryMemorySystem(MemorySystem):
                 "memory_context_count": len(retrieval_result.memory_context),
             },
         )
-
-    def _sync_persistent_memory(
-        self,
-        write_result: "MemoryWriteResult",
-        persistence_sync: MemoryWriteResultPersistenceSync | None = None,
-        strict: bool = False,
-    ) -> dict[str, object] | None:
-        selected_persistence_sync = persistence_sync
-        if selected_persistence_sync is None:
-            return None
-        try:
-            return selected_persistence_sync.sync(write_result).to_record()
-        except Exception as error:
-            if strict:
-                raise
-            LOGGER.warning("Persistent memory sync failed: %s", error)
-            return {
-                "error": str(error),
-                "sync": selected_persistence_sync.__class__.__name__,
-            }

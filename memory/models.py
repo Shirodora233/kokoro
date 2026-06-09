@@ -22,6 +22,7 @@ MemoryRecordType = Literal[
     "description",
     "entity",
     "property",
+    "relation",
     "link",
     "time_ref",
     "time_link",

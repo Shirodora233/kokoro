@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 
 from conversation.service import ConversationService
@@ -29,7 +28,6 @@ from memory.models import (
     MemoryTurnSnapshot,
 )
 from memory.system import InMemoryMemorySystem
-from memory.writing import MemoryWriteResult
 from web_frontend.server import KokoroRequestHandler
 
 from .fixtures import (
@@ -50,7 +48,6 @@ def main() -> int:
         test_retrieve_context_uses_active_and_stored_records,
         test_prepare_turn_searches_without_writing,
         test_commit_turn_reuses_prepare_snapshot,
-        test_commit_turn_invokes_persistence_sync,
         test_commit_turn_keeps_retrieved_events_active,
         test_conversation_send_message_prepares_before_llm_and_commits_after,
         test_llm_extraction_debug_records_raw_and_normalized_candidates,
@@ -207,23 +204,6 @@ def test_commit_turn_reuses_prepare_snapshot() -> None:
     assert commit.metadata["candidate_matching"]["metadata"]["search"]["search"] == (
         "simple_store_context"
     )
-
-
-def test_commit_turn_invokes_persistence_sync() -> None:
-    persistence_sync = _CapturingPersistenceSync()
-    system = InMemoryMemorySystem(
-        extractor=SequenceMemoryExtractor(
-            [[candidate("entity", "林医生", "cand_doctor")]]
-        ),
-        persistence_sync=persistence_sync,  # type: ignore[arg-type]
-    )
-
-    result = _prepare_and_commit(system, make_turn("msg_sync", "我明天要和林医生复诊。"))
-
-    assert len(persistence_sync.calls) == 1
-    assert len(persistence_sync.calls[0].created_records) == 1
-    assert persistence_sync.calls[0].created_records[0].text == "林医生"
-    assert result.metadata["persistent_write"]["captured_created_count"] == 1
 
 
 def test_commit_turn_keeps_retrieved_events_active() -> None:
@@ -476,23 +456,6 @@ def test_web_debug_api_returns_memory_and_traces_without_raw_by_default() -> Non
     assert raw_trace_response["trace"]["extraction"]["raw_output"]
     assert memory_response["memory"]["generic_memories"]
     assert memory_response["memory"]["active_memory_context"] is not None
-
-
-@dataclass
-class _CapturedSyncResult:
-    created_count: int
-
-    def to_record(self) -> dict[str, int]:
-        return {"captured_created_count": self.created_count}
-
-
-class _CapturingPersistenceSync:
-    def __init__(self) -> None:
-        self.calls: list[MemoryWriteResult] = []
-
-    def sync(self, write_result: MemoryWriteResult) -> _CapturedSyncResult:
-        self.calls.append(write_result)
-        return _CapturedSyncResult(len(write_result.created_records))
 
 
 class _StaticContextRetriever:

@@ -3,6 +3,7 @@
 from .in_memory import InMemoryMemoryWritePlanApplier
 from .interfaces import MemoryWritePlanApplier
 from .models import MemoryWriteFailure, MemoryWriteRequest, MemoryWriteResult
+from .persistent import PersistentMemoryWritePlanApplier
 
 __all__ = [
     "InMemoryMemoryWritePlanApplier",
@@ -10,4 +11,5 @@ __all__ = [
     "MemoryWritePlanApplier",
     "MemoryWriteRequest",
     "MemoryWriteResult",
+    "PersistentMemoryWritePlanApplier",
 ]

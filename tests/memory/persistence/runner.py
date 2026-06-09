@@ -23,13 +23,13 @@ from memory.persistence.models import (
     PersistentTimeLink,
     PersistentTimeRef,
 )
-from memory.persistence import MemoryWriteResultPersistenceSync
 from memory.persistence.postgres import PostgresPersistentMemoryRepository
+from memory.reconciliation import MemoryWriteOperation, MemoryWritePlan
 from memory.retrieval import (
     NormalizedMemoryContextRetriever,
     PostgresNormalizedMemorySearch,
 )
-from memory.writing import MemoryWriteResult
+from memory.writing import MemoryWriteRequest, PersistentMemoryWritePlanApplier
 
 USER_ID = "usr_persistence_test"
 SESSION_ID = "ses_persistence_test"
@@ -62,7 +62,7 @@ def main() -> int:
     tests = [
         test_save_and_load_bundle,
         test_duplicate_natural_links_are_idempotent,
-        test_sync_write_result_to_persistent_bundle,
+        test_persistent_applier_writes_plan_to_normalized_tables,
         test_normalized_retriever_reads_postgres_views,
     ]
     for test in tests:
@@ -281,118 +281,146 @@ def test_duplicate_natural_links_are_idempotent(
     assert repository.get_time_link(TIME_LINK_DUP_ID) is None
 
 
-def test_sync_write_result_to_persistent_bundle(
+def test_persistent_applier_writes_plan_to_normalized_tables(
     repository: PostgresPersistentMemoryRepository,
 ) -> None:
-    sync = MemoryWriteResultPersistenceSync(repository)
+    applier = PersistentMemoryWritePlanApplier(repository)
     source = MemorySourceRef(
         source_type="message",
         source_id=MESSAGE_ID,
         quote="明天上午十点我要和林医生复诊，地点在静安门诊。",
     )
-    result = sync.sync(
-        MemoryWriteResult(
-            created_records=[
-                MemoryRecord(
-                    id=EVENT_ID,
-                    memory_type="event",
-                    text="复诊安排",
-                    source_refs=[source],
-                    metadata={
-                        "summary": "用户计划和林医生复诊",
-                        "event_type": "appointment",
-                        "user_id": USER_ID,
-                        "session_id": SESSION_ID,
-                    },
-                ),
-                MemoryRecord(
-                    id=ENTITY_ID,
-                    memory_type="entity",
-                    text="林医生",
-                    source_refs=[source],
-                    metadata={
-                        "entity_type": "person",
-                        "identity_summary": "用户复诊安排中的医生",
-                        "aliases": ["林医生"],
-                        "user_id": USER_ID,
-                        "session_id": SESSION_ID,
-                    },
-                ),
-                MemoryRecord(
-                    id=TIME_REF_ID,
-                    memory_type="time_ref",
-                    text="明天上午十点",
-                    source_refs=[source],
-                    metadata={
-                        "raw_text": "明天上午十点",
-                        "time_kind": "relative",
-                        "timeline_kind": "real_world",
-                        "certainty": "inferred",
-                        "anchor_timezone": "Asia/Shanghai",
-                        "anchor_utc_offset": "+08:00",
-                        "anchor_message_id": MESSAGE_ID,
-                        "resolved_start": "2026-05-16T10:00:00+08:00",
-                        "granularity": "minute",
-                    },
-                ),
-            ],
-            attached_records=[
-                MemoryRecord(
-                    id=DESCRIPTION_ID,
-                    memory_type="description",
-                    text="用户计划明天上午十点和林医生复诊，地点在静安门诊。",
-                    source_refs=[source],
-                    metadata={
-                        "attached_to_record_id": EVENT_ID,
-                        "description_type": "appointment_detail",
-                        "user_id": USER_ID,
-                        "session_id": SESSION_ID,
-                    },
-                ),
-                MemoryRecord(
-                    id=PROPERTY_ID,
-                    memory_type="property",
-                    text="林医生是用户此次复诊的医生。",
-                    source_refs=[source],
-                    metadata={
-                        "attached_to_record_id": ENTITY_ID,
-                        "property_type": "role",
-                        "user_id": USER_ID,
-                        "session_id": SESSION_ID,
-                    },
-                ),
-                MemoryRecord(
-                    id=LINK_ID,
-                    memory_type="link",
-                    text="event involves entity",
-                    source_refs=[source],
-                    metadata={
-                        "from_type": "event",
-                        "from_record_id": EVENT_ID,
-                        "to_type": "entity",
-                        "to_record_id": ENTITY_ID,
-                        "relation_type": "involves",
-                        "user_id": USER_ID,
-                    },
-                ),
-                MemoryRecord(
-                    id=TIME_LINK_ID,
-                    memory_type="time_link",
-                    text="event scheduled_for time_ref",
-                    source_refs=[source],
-                    metadata={
-                        "target_type": "event",
-                        "target_record_id": EVENT_ID,
-                        "time_ref_record_id": TIME_REF_ID,
-                        "time_role": "scheduled_for",
-                    },
-                ),
-            ],
+    result = applier.apply(
+        MemoryWriteRequest(
+            plan=MemoryWritePlan(
+                operations=[
+                    _operation(
+                        "create",
+                        MemoryRecord(
+                            id=EVENT_ID,
+                            memory_type="event",
+                            text="复诊安排",
+                            source_refs=[source],
+                            metadata={
+                                "candidate_client_id": "cand_event",
+                                "summary": "用户计划和林医生复诊",
+                                "event_type": "appointment",
+                            },
+                        ),
+                    ),
+                    _operation(
+                        "create",
+                        MemoryRecord(
+                            id=ENTITY_ID,
+                            memory_type="entity",
+                            text="林医生",
+                            source_refs=[source],
+                            metadata={
+                                "candidate_client_id": "cand_entity",
+                                "entity_type": "person",
+                                "identity_summary": "用户复诊安排中的医生",
+                                "aliases": ["林医生"],
+                            },
+                        ),
+                    ),
+                    _operation(
+                        "create",
+                        MemoryRecord(
+                            id=TIME_REF_ID,
+                            memory_type="time_ref",
+                            text="明天上午十点",
+                            source_refs=[source],
+                            metadata={
+                                "candidate_client_id": "cand_time",
+                                "raw_text": "明天上午十点",
+                                "time_kind": "relative",
+                                "timeline_kind": "real_world",
+                                "certainty": "inferred",
+                                "anchor_timezone": "Asia/Shanghai",
+                                "anchor_utc_offset": "+08:00",
+                                "anchor_message_id": MESSAGE_ID,
+                                "resolved_start": "2026-05-16T10:00:00+08:00",
+                                "granularity": "minute",
+                            },
+                        ),
+                    ),
+                    _operation(
+                        "attach",
+                        MemoryRecord(
+                            id=DESCRIPTION_ID,
+                            memory_type="description",
+                            text="用户计划明天上午十点和林医生复诊，地点在静安门诊。",
+                            source_refs=[source],
+                            metadata={
+                                "candidate_client_id": "cand_description",
+                                "event_client_id": "cand_event",
+                                "description_type": "appointment_detail",
+                            },
+                        ),
+                        target_candidate_id="cand_event",
+                        relation_type="has_description",
+                    ),
+                    _operation(
+                        "attach",
+                        MemoryRecord(
+                            id=PROPERTY_ID,
+                            memory_type="property",
+                            text="林医生是用户此次复诊的医生。",
+                            source_refs=[source],
+                            metadata={
+                                "candidate_client_id": "cand_property",
+                                "entity_client_id": "cand_entity",
+                                "property_type": "role",
+                            },
+                        ),
+                        target_candidate_id="cand_entity",
+                        relation_type="has_property",
+                    ),
+                    _operation(
+                        "attach",
+                        MemoryRecord(
+                            id=LINK_ID,
+                            memory_type="link",
+                            text="event involves entity",
+                            source_refs=[source],
+                            metadata={
+                                "candidate_client_id": "cand_link",
+                                "from_type": "event",
+                                "from_client_id": "cand_event",
+                                "to_type": "entity",
+                                "to_client_id": "cand_entity",
+                                "relation_type": "involves",
+                            },
+                        ),
+                        relation_type="involves",
+                    ),
+                    _operation(
+                        "attach",
+                        MemoryRecord(
+                            id=TIME_LINK_ID,
+                            memory_type="time_link",
+                            text="event scheduled_for time_ref",
+                            source_refs=[source],
+                            metadata={
+                                "candidate_client_id": "cand_time_link",
+                                "target_type": "event",
+                                "target_client_id": "cand_event",
+                                "time_ref_client_id": "cand_time",
+                                "time_role": "scheduled_for",
+                            },
+                        ),
+                        relation_type="scheduled_for",
+                    ),
+                ]
+            ),
+            user_id=USER_ID,
+            session_id=SESSION_ID,
         )
     )
 
-    assert result.metadata["stored_count"] == 7
-    assert result.build_result.skipped_records == []
+    assert result.metadata["created_count"] == 3
+    assert result.metadata["attached_count"] == 4
+    assert result.failed_operations == []
     assert repository.get_event(EVENT_ID) is not None
     assert repository.get_description(DESCRIPTION_ID) is not None
     assert repository.get_entity(ENTITY_ID) is not None
@@ -405,7 +433,7 @@ def test_sync_write_result_to_persistent_bundle(
 def test_normalized_retriever_reads_postgres_views(
     repository: PostgresPersistentMemoryRepository,
 ) -> None:
-    test_sync_write_result_to_persistent_bundle(repository)
+    test_persistent_applier_writes_plan_to_normalized_tables(repository)
 
     retriever = NormalizedMemoryContextRetriever(
         repository,
@@ -469,40 +497,41 @@ def test_normalized_retriever_reads_postgres_views(
 
 def _cleanup(repository: PostgresPersistentMemoryRepository) -> None:
     with repository.database.connect() as connection:
-        for memory_type, memory_id in [
-            ("event", EVENT_ID),
-            ("description", DESCRIPTION_ID),
-            ("entity", ENTITY_ID),
-            ("property", PROPERTY_ID),
-            ("link", LINK_ID),
-            ("link", LINK_DUP_ID),
-            ("time_ref", TIME_REF_ID),
-            ("time_link", TIME_LINK_ID),
-            ("time_link", TIME_LINK_DUP_ID),
-        ]:
-            connection.execute(
-                """
-                DELETE FROM memory_sources
-                WHERE memory_type = %s AND memory_id = %s
-                """,
-                (memory_type, memory_id),
-            )
         connection.execute(
-            "DELETE FROM memory_time_links WHERE id = ANY(%s)",
-            ([TIME_LINK_ID, TIME_LINK_DUP_ID],),
+            "DELETE FROM memory_objects WHERE id = ANY(%s)",
+            (
+                [
+                    EVENT_ID,
+                    DESCRIPTION_ID,
+                    ENTITY_ID,
+                    PROPERTY_ID,
+                    LINK_ID,
+                    LINK_DUP_ID,
+                    TIME_REF_ID,
+                    TIME_LINK_ID,
+                    TIME_LINK_DUP_ID,
+                ],
+            ),
         )
-        connection.execute(
-            "DELETE FROM memory_links WHERE id = ANY(%s)",
-            ([LINK_ID, LINK_DUP_ID],),
-        )
-        connection.execute("DELETE FROM memory_properties WHERE id = %s", (PROPERTY_ID,))
-        connection.execute(
-            "DELETE FROM memory_descriptions WHERE id = %s",
-            (DESCRIPTION_ID,),
-        )
-        connection.execute("DELETE FROM memory_time_refs WHERE id = %s", (TIME_REF_ID,))
-        connection.execute("DELETE FROM memory_entities WHERE id = %s", (ENTITY_ID,))
-        connection.execute("DELETE FROM memory_events WHERE id = %s", (EVENT_ID,))
+
+
+def _operation(
+    action: str,
+    record: MemoryRecord,
+    target_candidate_id: str | None = None,
+    relation_type: str | None = None,
+) -> MemoryWriteOperation:
+    candidate_id = record.metadata.get("candidate_client_id")
+    return MemoryWriteOperation(
+        action=action,  # type: ignore[arg-type]
+        candidate_id=candidate_id if isinstance(candidate_id, str) else record.id,
+        candidate_type=record.memory_type,
+        candidate_text=record.text,
+        record=record,
+        target_candidate_id=target_candidate_id,
+        relation_type=relation_type,
+        reason="test operation",
+    )
 
 
 if __name__ == "__main__":

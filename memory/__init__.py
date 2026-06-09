@@ -49,7 +49,6 @@ from .persistence import (
     Confidence,
     Importance,
     MemoryRecordPersistenceAdapter,
-    MemoryWriteResultPersistenceSync,
     ObjectType,
     PersistentDescription,
     PersistentEntity,
@@ -63,7 +62,6 @@ from .persistence import (
     PersistentTimeLink,
     PersistentTimeRef,
     PersistentMemorySkippedRecord,
-    PersistentMemorySyncResult,
     TimeCertainty,
     TimeKind,
     TimelineKind,
@@ -99,6 +97,7 @@ from .writing import (
     MemoryWritePlanApplier,
     MemoryWriteRequest,
     MemoryWriteResult,
+    PersistentMemoryWritePlanApplier,
 )
 
 __all__ = [
@@ -146,7 +145,6 @@ __all__ = [
     "MemoryWritePlanApplier",
     "MemoryWriteRequest",
     "MemoryWriteResult",
-    "MemoryWriteResultPersistenceSync",
     "ObjectType",
     "InMemoryMemorySystem",
     "InMemoryMemoryWritePlanApplier",
@@ -175,7 +173,7 @@ __all__ = [
     "PersistentTimeLink",
     "PersistentTimeRef",
     "PersistentMemorySkippedRecord",
-    "PersistentMemorySyncResult",
+    "PersistentMemoryWritePlanApplier",
     "ReconciliationConfidence",
     "ReconciliationEvidence",
     "RelatedMemory",

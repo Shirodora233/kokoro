@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,14 +18,13 @@ from llm.openai_client import OpenAIChatClient
 from memory.config import MemoryRuntimeConfig
 from memory.extraction import LLMMemoryExtractor, MemoryExtractionPromptBuilder
 from memory.models import MemoryInputMessage, MemoryTurnCommitInput, MemoryTurnResult
-from memory.persistence import MemoryWriteResultPersistenceSync
 from memory.persistence.postgres import PostgresPersistentMemoryRepository
 from memory.retrieval import (
     NormalizedMemoryContextRetriever,
     PostgresNormalizedMemorySearch,
 )
-from memory.storage.postgres import PostgresMemoryStore
 from memory.system import InMemoryMemorySystem
+from memory.writing import PersistentMemoryWritePlanApplier
 from tests.memory.system_real.recording import RecordingChatClient, TokenUsage
 
 USER_ID_PREFIX = "usr_pg_real_memory"
@@ -143,10 +142,8 @@ def _run_scenario(
     user_id: str,
     session_id: str,
 ) -> ScenarioCapture:
-    store = PostgresMemoryStore(database_url)
     repository = PostgresPersistentMemoryRepository(database_url)
     system = InMemoryMemorySystem(
-        store=store,
         extractor=LLMMemoryExtractor(
             chat_client=chat_client,
             model=memory_config.extraction_model or llm_config.model,
@@ -159,7 +156,7 @@ def _run_scenario(
             repository,
             search=PostgresNormalizedMemorySearch(repository),
         ),
-        persistence_sync=MemoryWriteResultPersistenceSync(repository),
+        write_applier=PersistentMemoryWritePlanApplier(repository),
     )
 
     messages = [
@@ -219,10 +216,7 @@ def _run_scenario(
         if turn_capture.error:
             break
 
-    generic_records = [
-        record.to_record()
-        for record in store.list_records(user_id=user_id, session_id=session_id)
-    ]
+    generic_records: list[dict[str, Any]] = []
     normalized_rows = _load_normalized_rows(repository, user_id, session_id)
     duplicate_links = _duplicate_links(repository, user_id, session_id)
     duplicate_time_links = _duplicate_time_links(repository, session_id)
@@ -279,9 +273,8 @@ def _checks(
 ) -> list[CheckResult]:
     return [
         _check_no_turn_errors(turns),
-        _check_no_persistent_sync_errors(turns),
+        _check_no_write_errors(turns),
         _check_event_entity_refs_do_not_carry_properties(turns),
-        _check_generic_records(generic_records),
         _check_normalized_event(normalized_rows),
         _check_normalized_food_property(normalized_rows),
         _check_no_duplicate_links(duplicate_links),
@@ -296,17 +289,20 @@ def _check_no_turn_errors(turns: list[TurnCapture]) -> CheckResult:
     return CheckResult("真实 LLM turn 不抛异常", True, "ok")
 
 
-def _check_no_persistent_sync_errors(turns: list[TurnCapture]) -> CheckResult:
+def _check_no_write_errors(turns: list[TurnCapture]) -> CheckResult:
     errors: list[str] = []
     for turn in turns:
         if turn.result is None:
             continue
-        persistent_write = turn.result.metadata.get("persistent_write")
-        if isinstance(persistent_write, dict) and persistent_write.get("error"):
-            errors.append(str(persistent_write["error"]))
+        write_result = turn.result.metadata.get("write_result")
+        if not isinstance(write_result, dict):
+            continue
+        failed = write_result.get("failed_operations")
+        if isinstance(failed, list) and failed:
+            errors.append(json.dumps(failed, ensure_ascii=False, default=str))
     if errors:
-        return CheckResult("PostgreSQL normalized sync 不失败", False, "; ".join(errors))
-    return CheckResult("PostgreSQL normalized sync 不失败", True, "ok")
+        return CheckResult("PostgreSQL normalized write 不失败", False, "; ".join(errors))
+    return CheckResult("PostgreSQL normalized write 不失败", True, "ok")
 
 
 def _check_event_entity_refs_do_not_carry_properties(
@@ -347,18 +343,6 @@ def _check_event_entity_refs_do_not_carry_properties(
     )
 
 
-def _check_generic_records(records: list[dict[str, Any]]) -> CheckResult:
-    text = _searchable_records(records)
-    missing = [needle for needle in ("打抛饭", "辣") if needle not in text]
-    if missing:
-        return CheckResult(
-            "generic memory records 包含打抛饭和辣",
-            False,
-            f"missing {missing}",
-        )
-    return CheckResult("generic memory records 包含打抛饭和辣", True, "ok")
-
-
 def _check_normalized_event(rows: dict[str, list[dict[str, Any]]]) -> CheckResult:
     text = _searchable_records([*rows["events"], *rows["descriptions"]])
     if "打抛饭" not in text:
@@ -382,8 +366,8 @@ def _check_normalized_food_property(
 
 def _check_no_duplicate_links(duplicates: list[dict[str, Any]]) -> CheckResult:
     if duplicates:
-        return CheckResult("memory_links 无重复自然关系", False, json.dumps(duplicates))
-    return CheckResult("memory_links 无重复自然关系", True, "ok")
+        return CheckResult("memory_relations 无重复自然关系", False, json.dumps(duplicates))
+    return CheckResult("memory_relations 无重复自然关系", True, "ok")
 
 
 def _check_no_duplicate_time_links(duplicates: list[dict[str, Any]]) -> CheckResult:
@@ -409,52 +393,88 @@ def _load_normalized_rows(
         return {
             "events": _rows(
                 connection,
-                "SELECT id, title, summary, event_type, metadata FROM memory_events "
-                "WHERE user_id = %s AND session_id = %s ORDER BY created_at",
+                """
+                SELECT e.id, e.title, e.summary, e.event_type, o.metadata
+                FROM memory_events e
+                JOIN memory_objects o ON o.id = e.id
+                WHERE o.user_id = %s AND o.session_id = %s
+                ORDER BY o.created_at
+                """,
                 (user_id, session_id),
             ),
             "descriptions": _rows(
                 connection,
-                "SELECT id, event_id, content, description_type, metadata "
-                "FROM memory_descriptions "
-                "WHERE user_id = %s AND session_id = %s ORDER BY created_at",
+                "SELECT d.id, d.event_id, d.content, d.description_type, o.metadata "
+                "FROM memory_descriptions d "
+                "JOIN memory_objects o ON o.id = d.id "
+                "WHERE o.user_id = %s AND o.session_id = %s ORDER BY o.created_at",
                 (user_id, session_id),
             ),
             "entities": _rows(
                 connection,
-                "SELECT id, name, entity_type, identity_summary, metadata "
-                "FROM memory_entities "
-                "WHERE user_id = %s AND session_id = %s ORDER BY created_at",
+                """
+                SELECT ent.id, ent.name, ent.entity_type, ent.identity_summary,
+                       COALESCE(alias_rows.aliases, '[]'::jsonb) AS aliases,
+                       o.metadata
+                FROM memory_entities ent
+                JOIN memory_objects o ON o.id = ent.id
+                LEFT JOIN (
+                  SELECT entity_id, jsonb_agg(alias ORDER BY position) AS aliases
+                  FROM memory_entity_aliases
+                  GROUP BY entity_id
+                ) alias_rows ON alias_rows.entity_id = ent.id
+                WHERE o.user_id = %s AND o.session_id = %s
+                ORDER BY o.created_at
+                """,
                 (user_id, session_id),
             ),
             "properties": _rows(
                 connection,
-                "SELECT id, entity_id, content, property_type, metadata "
-                "FROM memory_properties "
-                "WHERE user_id = %s AND session_id = %s ORDER BY created_at",
+                "SELECT p.id, p.entity_id, p.content, p.property_type, o.metadata "
+                "FROM memory_properties p "
+                "JOIN memory_objects o ON o.id = p.id "
+                "WHERE o.user_id = %s AND o.session_id = %s ORDER BY o.created_at",
                 (user_id, session_id),
             ),
             "links": _rows(
                 connection,
-                "SELECT id, from_type, from_id, to_type, to_id, relation_type, "
-                "metadata FROM memory_links "
-                "WHERE user_id = %s OR metadata->>'session_id' = %s "
-                "ORDER BY created_at",
+                """
+                SELECT r.id, from_object.object_type AS from_type,
+                       r.from_object_id AS from_id,
+                       to_object.object_type AS to_type,
+                       r.to_object_id AS to_id,
+                       r.relation_type, r.reason, o.metadata
+                FROM memory_relations r
+                JOIN memory_objects o ON o.id = r.id
+                JOIN memory_objects from_object ON from_object.id = r.from_object_id
+                JOIN memory_objects to_object ON to_object.id = r.to_object_id
+                WHERE o.user_id = %s OR o.session_id = %s
+                ORDER BY o.created_at
+                """,
                 (user_id, session_id),
             ),
             "time_refs": _rows(
                 connection,
-                "SELECT id, raw_text, time_kind, timeline_kind, certainty, metadata "
-                "FROM memory_time_refs "
-                "WHERE metadata->>'session_id' = %s ORDER BY created_at",
-                (session_id,),
+                "SELECT tr.id, tr.raw_text, tr.time_kind, tr.timeline_kind, tr.certainty, o.metadata "
+                "FROM memory_time_refs tr "
+                "JOIN memory_objects o ON o.id = tr.id "
+                "WHERE o.user_id = %s AND o.session_id = %s ORDER BY o.created_at",
+                (user_id, session_id),
             ),
             "time_links": _rows(
                 connection,
-                "SELECT id, target_type, target_id, time_ref_id, time_role, metadata "
-                "FROM memory_time_links "
-                "WHERE metadata->>'session_id' = %s ORDER BY created_at",
-                (session_id,),
+                """
+                SELECT tl.id, target_object.object_type AS target_type,
+                       tl.target_object_id AS target_id,
+                       tl.time_ref_object_id AS time_ref_id,
+                       tl.time_role, o.metadata
+                FROM memory_time_links tl
+                JOIN memory_objects o ON o.id = tl.id
+                JOIN memory_objects target_object ON target_object.id = tl.target_object_id
+                WHERE o.user_id = %s OR o.session_id = %s
+                ORDER BY o.created_at
+                """,
+                (user_id, session_id),
             ),
         }
 
@@ -468,10 +488,11 @@ def _duplicate_links(
         return _rows(
             connection,
             """
-            SELECT from_type, from_id, to_type, to_id, relation_type, count(*) AS count
-            FROM memory_links
-            WHERE user_id = %s OR metadata->>'session_id' = %s
-            GROUP BY from_type, from_id, to_type, to_id, relation_type
+            SELECT from_object_id, to_object_id, relation_type, count(*) AS count
+            FROM memory_relations r
+            JOIN memory_objects o ON o.id = r.id
+            WHERE o.user_id = %s OR o.session_id = %s
+            GROUP BY from_object_id, to_object_id, relation_type
             HAVING count(*) > 1
             ORDER BY count DESC
             """,
@@ -487,10 +508,11 @@ def _duplicate_time_links(
         return _rows(
             connection,
             """
-            SELECT target_type, target_id, time_ref_id, time_role, count(*) AS count
-            FROM memory_time_links
-            WHERE metadata->>'session_id' = %s
-            GROUP BY target_type, target_id, time_ref_id, time_role
+            SELECT target_object_id, time_ref_object_id, time_role, count(*) AS count
+            FROM memory_time_links tl
+            JOIN memory_objects o ON o.id = tl.id
+            WHERE o.session_id = %s
+            GROUP BY target_object_id, time_ref_object_id, time_role
             HAVING count(*) > 1
             ORDER BY count DESC
             """,
@@ -534,10 +556,10 @@ def _write_report(
         "",
         "## Scope",
         "",
-        "This test uses the real `LLMMemoryExtractor`, `PostgresMemoryStore`, "
-        "`MemoryWriteResultPersistenceSync`, and normalized PostgreSQL memory "
-        "tables. It targets the duplicate entity/property/link pattern observed "
-        "around `吃打抛饭经历`.",
+        "This test uses the real `LLMMemoryExtractor`, direct normalized "
+        "PostgreSQL memory writes, and normalized retrieval. It targets the "
+        "duplicate entity/property/relation pattern observed around "
+        "`吃打抛饭经历`.",
         "",
         "## Checks",
         "",
@@ -668,82 +690,13 @@ def _default_report_path() -> Path:
 def _cleanup(database_url: str, *, user_id: str, session_id: str) -> None:
     repository = PostgresPersistentMemoryRepository(database_url)
     with repository.database.connect() as connection:
-        ids = {
-            "record": [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM memory_records WHERE session_id = %s",
-                    (session_id,),
-                ).fetchall()
-            ],
-            "event": _ids_for_session(connection, "memory_events", session_id),
-            "description": _ids_for_session(
-                connection,
-                "memory_descriptions",
-                session_id,
-            ),
-            "entity": _ids_for_session(connection, "memory_entities", session_id),
-            "property": _ids_for_session(connection, "memory_properties", session_id),
-            "link": [
-                row["id"]
-                for row in connection.execute(
-                    """
-                    SELECT id FROM memory_links
-                    WHERE user_id = %s OR metadata->>'session_id' = %s
-                    """,
-                    (user_id, session_id),
-                ).fetchall()
-            ],
-            "time_ref": [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM memory_time_refs WHERE metadata->>'session_id' = %s",
-                    (session_id,),
-                ).fetchall()
-            ],
-            "time_link": [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM memory_time_links WHERE metadata->>'session_id' = %s",
-                    (session_id,),
-                ).fetchall()
-            ],
-        }
-        for memory_type, object_ids in ids.items():
-            if memory_type == "record" or not object_ids:
-                continue
-            connection.execute(
-                "DELETE FROM memory_sources WHERE memory_type = %s AND memory_id = ANY(%s)",
-                (memory_type, object_ids),
-            )
-        if ids["record"]:
-            connection.execute(
-                "DELETE FROM memory_source_refs WHERE memory_record_id = ANY(%s)",
-                (ids["record"],),
-            )
-        _delete_ids(connection, "memory_time_links", ids["time_link"])
-        _delete_ids(connection, "memory_links", ids["link"])
-        _delete_ids(connection, "memory_properties", ids["property"])
-        _delete_ids(connection, "memory_descriptions", ids["description"])
-        _delete_ids(connection, "memory_time_refs", ids["time_ref"])
-        _delete_ids(connection, "memory_entities", ids["entity"])
-        _delete_ids(connection, "memory_events", ids["event"])
-        _delete_ids(connection, "memory_records", ids["record"])
-
-
-def _ids_for_session(connection, table: str, session_id: str) -> list[str]:
-    return [
-        row["id"]
-        for row in connection.execute(
-            f"SELECT id FROM {table} WHERE session_id = %s",
-            (session_id,),
-        ).fetchall()
-    ]
-
-
-def _delete_ids(connection, table: str, ids: list[str]) -> None:
-    if ids:
-        connection.execute(f"DELETE FROM {table} WHERE id = ANY(%s)", (ids,))
+        connection.execute(
+            """
+            DELETE FROM memory_objects
+            WHERE user_id = %s OR session_id = %s
+            """,
+            (user_id, session_id),
+        )
 
 
 if __name__ == "__main__":

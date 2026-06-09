@@ -56,45 +56,52 @@ class PostgresNormalizedMemorySearch:
         hits: list[MemorySearchHit] = []
         entity_hits = self._search_table(
             table="memory_entities",
+            table_alias="ent",
             object_type="entity",
             text_expression=(
-                "concat_ws(' ', name, entity_type, identity_summary, aliases::text)"
+                "concat_ws(' ', ent.name, ent.entity_type, "
+                "ent.identity_summary, COALESCE(alias_text.aliases, ''))"
             ),
             base_score=1.0,
             reason="entity_text_match",
             request=request,
             terms=terms,
-            status_column=None,
+            extra_join=(
+                "LEFT JOIN ("
+                "SELECT entity_id, string_agg(alias, ' ' ORDER BY position) AS aliases "
+                "FROM memory_entity_aliases GROUP BY entity_id"
+                ") alias_text ON alias_text.entity_id = ent.id"
+            ),
         )
         event_hits = self._search_table(
             table="memory_events",
+            table_alias="e",
             object_type="event",
-            text_expression="concat_ws(' ', title, summary, event_type)",
+            text_expression="concat_ws(' ', e.title, e.summary, e.event_type)",
             base_score=0.95,
             reason="event_text_match",
             request=request,
             terms=terms,
-            status_column="status",
         )
         property_hits = self._search_table(
             table="memory_properties",
+            table_alias="p",
             object_type="property",
-            text_expression="concat_ws(' ', content, property_type)",
+            text_expression="concat_ws(' ', p.content, p.property_type)",
             base_score=0.9,
             reason="property_text_match",
             request=request,
             terms=terms,
-            status_column="status",
         )
         description_hits = self._search_table(
             table="memory_descriptions",
+            table_alias="d",
             object_type="description",
-            text_expression="concat_ws(' ', content, description_type)",
+            text_expression="concat_ws(' ', d.content, d.description_type)",
             base_score=0.85,
             reason="description_text_match",
             request=request,
             terms=terms,
-            status_column="status",
         )
         hits.extend([*entity_hits, *event_hits, *property_hits, *description_hits])
         ranked_hits = self.ranker.rank(hits, request)
@@ -126,21 +133,28 @@ class PostgresNormalizedMemorySearch:
     ) -> list[MemorySearchHit]:
         event_rows = self._recent_table_rows(
             table="memory_events",
+            table_alias="e",
             object_type="event",
-            text_expression="concat_ws(' ', title, summary, event_type)",
+            text_expression="concat_ws(' ', e.title, e.summary, e.event_type)",
             request=request,
-            status_column="status",
             limit=limit,
         )
         entity_rows = self._recent_table_rows(
             table="memory_entities",
+            table_alias="ent",
             object_type="entity",
             text_expression=(
-                "concat_ws(' ', name, entity_type, identity_summary, aliases::text)"
+                "concat_ws(' ', ent.name, ent.entity_type, "
+                "ent.identity_summary, COALESCE(alias_text.aliases, ''))"
             ),
             request=request,
-            status_column=None,
             limit=limit,
+            extra_join=(
+                "LEFT JOIN ("
+                "SELECT entity_id, string_agg(alias, ' ' ORDER BY position) AS aliases "
+                "FROM memory_entity_aliases GROUP BY entity_id"
+                ") alias_text ON alias_text.entity_id = ent.id"
+            ),
         )
         rows = sorted(
             [*event_rows, *entity_rows],
@@ -160,17 +174,19 @@ class PostgresNormalizedMemorySearch:
     def _search_table(
         self,
         table: str,
+        table_alias: str,
         object_type: MemoryObjectType,
         text_expression: str,
         base_score: float,
         reason: str,
         request: MemorySearchRequest,
         terms: Sequence[str],
-        status_column: str | None,
+        extra_join: str = "",
     ) -> list[MemorySearchHit]:
         conditions, params = _scope_conditions(request)
-        if status_column is not None:
-            conditions.insert(0, f"{status_column} = 'active'")
+        conditions.insert(0, "o.status = 'active'")
+        conditions.insert(0, "o.object_type = %s")
+        params.insert(0, _object_type_for_search(object_type))
         term_conditions: list[str] = []
         for term in terms:
             term_conditions.append(f"strpos(lower({text_expression}), %s) > 0")
@@ -182,16 +198,19 @@ class PostgresNormalizedMemorySearch:
         query = f"""
             SELECT
                 %s AS object_type,
-                id AS object_id,
+                {table_alias}.id AS object_id,
                 {text_expression} AS matched_text,
-                user_id,
-                session_id,
-                confidence,
-                importance,
-                updated_at
-            FROM {table}
+                o.user_id,
+                o.session_id,
+                o.confidence,
+                o.importance,
+                o.updated_at
+            FROM {table} {table_alias}
+            JOIN memory_objects o ON o.id = {table_alias}.id
+            LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id
+            {extra_join}
             WHERE {where_sql}
-            ORDER BY updated_at DESC, id ASC
+            ORDER BY o.updated_at DESC, {table_alias}.id ASC
             LIMIT %s
         """
         with self.repository.database.connect() as connection:
@@ -213,29 +232,34 @@ class PostgresNormalizedMemorySearch:
     def _recent_table_rows(
         self,
         table: str,
+        table_alias: str,
         object_type: MemoryObjectType,
         text_expression: str,
         request: MemorySearchRequest,
-        status_column: str | None,
         limit: int,
+        extra_join: str = "",
     ) -> list[Mapping[str, Any]]:
         conditions, params = _scope_conditions(request)
-        if status_column is not None:
-            conditions.insert(0, f"{status_column} = 'active'")
+        conditions.insert(0, "o.status = 'active'")
+        conditions.insert(0, "o.object_type = %s")
+        params.insert(0, _object_type_for_search(object_type))
         where_sql = " AND ".join(conditions) if conditions else "TRUE"
         query = f"""
             SELECT
                 %s AS object_type,
-                id AS object_id,
+                {table_alias}.id AS object_id,
                 {text_expression} AS matched_text,
-                user_id,
-                session_id,
-                confidence,
-                importance,
-                updated_at
-            FROM {table}
+                o.user_id,
+                o.session_id,
+                o.confidence,
+                o.importance,
+                o.updated_at
+            FROM {table} {table_alias}
+            JOIN memory_objects o ON o.id = {table_alias}.id
+            LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id
+            {extra_join}
             WHERE {where_sql}
-            ORDER BY updated_at DESC, id ASC
+            ORDER BY o.updated_at DESC, {table_alias}.id ASC
             LIMIT %s
         """
         with self.repository.database.connect() as connection:
@@ -250,10 +274,10 @@ def _scope_conditions(request: MemorySearchRequest) -> tuple[list[str], list[obj
     params: list[object] = []
     visible_scopes = _visible_session_scopes(request)
     if request.user_id is not None or request.session_id is not None:
-        conditions.append("(user_id IS NULL OR user_id = %s)")
+        conditions.append("(o.user_id IS NULL OR o.user_id = %s)")
         params.append(request.user_id)
         if visible_scopes:
-            session_conditions = ["session_id IS NULL"]
+            session_conditions = ["o.session_id IS NULL"]
             for scope in visible_scopes:
                 scoped_session_id = scope.get("session_id")
                 max_sequence = scope.get("max_checkpoint_sequence")
@@ -263,21 +287,21 @@ def _scope_conditions(request: MemorySearchRequest) -> tuple[list[str], list[obj
                     session_conditions.append(
                         """
                         (
-                          session_id = %s
+                          o.session_id = %s
                           AND (
-                            created_checkpoint_sequence IS NULL
-                            OR created_checkpoint_sequence <= %s
+                            o.created_checkpoint_id IS NULL
+                            OR cp.sequence <= %s
                           )
                         )
                         """
                     )
                     params.extend([scoped_session_id, max_sequence])
                 else:
-                    session_conditions.append("session_id = %s")
+                    session_conditions.append("o.session_id = %s")
                     params.append(scoped_session_id)
             conditions.append("(" + " OR ".join(session_conditions) + ")")
         else:
-            conditions.append("(session_id IS NULL OR session_id = %s)")
+            conditions.append("(o.session_id IS NULL OR o.session_id = %s)")
             params.append(request.session_id)
     return conditions, params
 
@@ -293,6 +317,10 @@ def _visible_session_scopes(
 
 def _search_terms(query: str) -> list[str]:
     return [term for term in query.casefold().split() if term]
+
+
+def _object_type_for_search(object_type: MemoryObjectType) -> str:
+    return "relation" if object_type == "link" else object_type
 
 
 def _match_quality(text: str | None, terms: Sequence[str]) -> str:

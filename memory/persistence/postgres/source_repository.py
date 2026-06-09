@@ -15,30 +15,28 @@ class PostgresMemorySourceRepository:
     def save_source_refs(
         self,
         connection: Any,
-        memory_type: str,
-        memory_id: str,
+        object_id: str,
         source_refs: Sequence[PersistentSourceRef],
     ) -> None:
         connection.execute(
             """
             DELETE FROM memory_sources
-            WHERE memory_type = %s AND memory_id = %s
+            WHERE object_id = %s
             """,
-            (memory_type, memory_id),
+            (object_id,),
         )
         for source_ref in source_refs:
             connection.execute(
                 """
                 INSERT INTO memory_sources (
-                    id, memory_type, memory_id, source_type, source_id,
+                    id, object_id, source_type, source_id,
                     quote, span_start, span_end, metadata
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     new_source_id(),
-                    memory_type,
-                    memory_id,
+                    object_id,
                     source_ref.source_type,
                     source_ref.source_id,
                     source_ref.quote,
@@ -51,16 +49,15 @@ class PostgresMemorySourceRepository:
     def load_source_refs(
         self,
         connection: Any,
-        memory_type: str,
-        memory_id: str,
+        object_id: str,
     ) -> list[PersistentSourceRef]:
         rows = connection.execute(
             """
             SELECT * FROM memory_sources
-            WHERE memory_type = %s AND memory_id = %s
+            WHERE object_id = %s
             ORDER BY created_at ASC, id ASC
             """,
-            (memory_type, memory_id),
+            (object_id,),
         ).fetchall()
         return [_source_ref_from_row(row) for row in rows]
 

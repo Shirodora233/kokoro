@@ -22,17 +22,14 @@ from .models import (
 )
 from .runtime import (
     MemoryRecordPersistenceAdapter,
-    MemoryWriteResultPersistenceSync,
     PersistentMemoryBuildResult,
     PersistentMemorySkippedRecord,
-    PersistentMemorySyncResult,
 )
 
 __all__ = [
     "Confidence",
     "Importance",
     "MemoryRecordPersistenceAdapter",
-    "MemoryWriteResultPersistenceSync",
     "ObjectType",
     "PersistentDescription",
     "PersistentEntity",
@@ -47,7 +44,6 @@ __all__ = [
     "PersistentSourceRef",
     "PersistentTimeLink",
     "PersistentTimeRef",
-    "PersistentMemorySyncResult",
     "TimeCertainty",
     "TimeKind",
     "TimelineKind",

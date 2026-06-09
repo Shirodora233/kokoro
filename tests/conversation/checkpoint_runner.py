@@ -14,12 +14,11 @@ from memory import (
     InMemoryMemorySystem,
     MemoryDebugRecorder,
     MemorySearchRequest,
-    MemoryWriteResultPersistenceSync,
     NormalizedMemoryContextRetriever,
+    PersistentMemoryWritePlanApplier,
     PostgresNormalizedMemorySearch,
 )
 from memory.persistence.postgres import PostgresPersistentMemoryRepository
-from memory.storage.postgres import PostgresMemoryStore
 from tests.memory.system.fixtures import SequenceMemoryExtractor, candidate
 from web_frontend.server import KokoroRequestHandler
 
@@ -66,7 +65,7 @@ def test_atomic_turn_creates_checkpoint_and_idempotent_retry(database_url: str) 
         )
         messages = service.get_transcript(session.id)
         checkpoints = service.list_checkpoints(session.id)
-        records = service.memory_system.store.list_records(
+        records = PostgresPersistentMemoryRepository(database_url).list_entities(
             user_id=user.id,
             session_id=session.id,
         )
@@ -79,8 +78,8 @@ def test_atomic_turn_creates_checkpoint_and_idempotent_retry(database_url: str) 
         assert checkpoints[0].assistant_message_id == assistant_message.id
         assert checkpoints[0].sequence == 2
         assert records
-        assert records[0].metadata["created_checkpoint_id"] == checkpoints[0].id
-        assert records[0].metadata["created_checkpoint_sequence"] == 2
+        assert records[0].created_checkpoint_id == checkpoints[0].id
+        assert records[0].created_checkpoint_sequence == 2
     finally:
         _cleanup(database_url, user.id)
 
@@ -108,7 +107,7 @@ def test_checkpoint_failure_rolls_back_visible_state(database_url: str) -> None:
             raise AssertionError("send_message should fail")
         assert service.get_transcript(session.id) == []
         assert service.list_checkpoints(session.id) == []
-        assert service.memory_system.store.list_records(
+        assert PostgresPersistentMemoryRepository(database_url).list_entities(
             user_id=user.id,
             session_id=session.id,
         ) == []
@@ -263,8 +262,8 @@ def test_checkpoint_memory_filters_future_records(database_url: str) -> None:
 
         first_memory = service.get_checkpoint_memory(first_checkpoint.id)
         texts = [
-            item["text"]
-            for item in first_memory["generic_memories"]
+            item["name"]
+            for item in first_memory["normalized_memories"]["entities"]
         ]
 
         assert "CheckpointBeforeOnly" in texts
@@ -339,17 +338,15 @@ def _service(
 ) -> tuple[ConversationService, "_StaticChatClient"]:
     store = PostgresConversationStore(database_url)
     store.checkpoints.fail_incomplete_turns()
-    memory_store = PostgresMemoryStore(database_url)
     persistent = PostgresPersistentMemoryRepository(database_url)
     debug_recorder = MemoryDebugRecorder()
     memory_system = InMemoryMemorySystem(
-        store=memory_store,
         extractor=extractor or SequenceMemoryExtractor(memory_batches),
         context_retriever=NormalizedMemoryContextRetriever(
             persistent,
             search=PostgresNormalizedMemorySearch(persistent),
         ),
-        persistence_sync=MemoryWriteResultPersistenceSync(persistent),
+        write_applier=PersistentMemoryWritePlanApplier(persistent),
         debug_recorder=debug_recorder,
     )
     chat_client = _StaticChatClient()
@@ -368,44 +365,10 @@ def _service(
 def _cleanup(database_url: str, user_id: str) -> None:
     store = PostgresConversationStore(database_url)
     with store.database.connect() as connection:
-        entity_ids = [
-            row["id"]
-            for row in connection.execute(
-                "SELECT id FROM memory_entities WHERE user_id = %s",
-                (user_id,),
-            ).fetchall()
-        ]
-        record_ids = [
-            row["id"]
-            for row in connection.execute(
-                "SELECT id FROM memory_records WHERE user_id = %s",
-                (user_id,),
-            ).fetchall()
-        ]
-        for memory_type, ids in (
-            ("entity", entity_ids),
-            ("record", record_ids),
-        ):
-            if not ids:
-                continue
-            if memory_type == "entity":
-                connection.execute(
-                    "DELETE FROM memory_sources WHERE memory_type = 'entity' AND memory_id = ANY(%s)",
-                    (ids,),
-                )
-                connection.execute(
-                    "DELETE FROM memory_entities WHERE id = ANY(%s)",
-                    (ids,),
-                )
-            else:
-                connection.execute(
-                    "DELETE FROM memory_source_refs WHERE memory_record_id = ANY(%s)",
-                    (ids,),
-                )
-                connection.execute(
-                    "DELETE FROM memory_records WHERE id = ANY(%s)",
-                    (ids,),
-                )
+        connection.execute(
+            "DELETE FROM memory_objects WHERE user_id = %s",
+            (user_id,),
+        )
         user = store.find_user_by_username(USERNAME)
         if user is not None:
             store.delete_user(user.id, cascade=True)

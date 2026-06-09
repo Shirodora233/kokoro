@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol, Sequence, cast
+from typing import Any, Sequence, cast
 
 from ..models import MemoryRecord, MemorySourceRef
-from ..writing import MemoryWriteResult
 from .models import (
     Confidence,
     Importance,
@@ -36,6 +35,7 @@ _OBJECT_TYPE_VALUES = {
     "description",
     "entity",
     "property",
+    "relation",
     "link",
     "time_ref",
     "time_link",
@@ -43,13 +43,6 @@ _OBJECT_TYPE_VALUES = {
     "message_section",
     "summary",
 }
-
-
-class PersistentMemoryBundleRepository(Protocol):
-    """Minimal repository surface needed by runtime persistence sync."""
-
-    def save_bundle(self, bundle: PersistentMemoryBundle) -> PersistentMemoryBundle:
-        """Persist normalized memory objects."""
 
 
 @dataclass(frozen=True)
@@ -68,16 +61,6 @@ class PersistentMemorySkippedRecord:
 class PersistentMemoryBuildResult:
     bundle: PersistentMemoryBundle
     skipped_records: list[PersistentMemorySkippedRecord] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_record(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class PersistentMemorySyncResult:
-    build_result: PersistentMemoryBuildResult
-    stored_bundle: PersistentMemoryBundle
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -372,42 +355,6 @@ class MemoryRecordPersistenceAdapter:
         if value not in _TIME_CERTAINTY_VALUES:
             raise ValueError("metadata.certainty has unsupported value")
         return cast(TimeCertainty, value)
-
-
-class MemoryWriteResultPersistenceSync:
-    """Persist generic runtime write results into normalized memory tables."""
-
-    def __init__(
-        self,
-        repository: PersistentMemoryBundleRepository,
-        adapter: MemoryRecordPersistenceAdapter | None = None,
-    ) -> None:
-        self.repository = repository
-        self.adapter = adapter or MemoryRecordPersistenceAdapter()
-
-    def sync(self, write_result: MemoryWriteResult) -> PersistentMemorySyncResult:
-        build_result = self.adapter.build_bundle(
-            [
-                *write_result.reused_records,
-                *write_result.created_records,
-                *write_result.attached_records,
-            ]
-        )
-        if _bundle_object_count(build_result.bundle) == 0:
-            stored_bundle = PersistentMemoryBundle()
-        else:
-            stored_bundle = self.repository.save_bundle(build_result.bundle)
-        return PersistentMemorySyncResult(
-            build_result=build_result,
-            stored_bundle=stored_bundle,
-            metadata={
-                "sync": self.__class__.__name__,
-                "repository": self.repository.__class__.__name__,
-                "stored_count": _bundle_object_count(stored_bundle),
-                "skipped_count": len(build_result.skipped_records),
-            },
-        )
-
 
 def _source_refs(source_refs: Sequence[MemorySourceRef]) -> list[PersistentSourceRef]:
     return [

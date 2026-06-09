@@ -101,114 +101,139 @@ class PostgresConversationDebugRepository:
         selected_limit = max(0, limit)
         with self.database.connect() as connection:
             checkpoint_ids = self._visible_checkpoint_ids(connection, scopes)
-            generic_memories = self._generic_memories(
-                connection,
-                user_id=user_id,
-                scopes=scopes,
-                limit=selected_limit,
-            )
             normalized_memories = {
-                "events": self._session_scoped_rows(
+                "events": self._object_scoped_rows(
                     connection,
-                    table="memory_events",
-                    columns=(
-                        "id, user_id, session_id, title, summary, event_type, "
-                        "status, confidence, importance, created_turn_id, "
-                        "created_checkpoint_id, created_checkpoint_sequence, "
-                        "metadata, created_at::text AS created_at, "
-                        "updated_at::text AS updated_at"
-                    ),
-                    user_id=user_id,
-                    scopes=scopes,
-                    limit=selected_limit,
-                    status_column="status",
-                ),
-                "descriptions": self._session_scoped_rows(
-                    connection,
-                    table="memory_descriptions",
-                    columns=(
-                        "id, event_id, user_id, session_id, content, "
-                        "description_type, status, confidence, importance, "
-                        "created_turn_id, created_checkpoint_id, "
-                        "created_checkpoint_sequence, metadata, "
-                        "created_at::text AS created_at, updated_at::text AS updated_at"
-                    ),
-                    user_id=user_id,
-                    scopes=scopes,
-                    limit=selected_limit,
-                    status_column="status",
-                ),
-                "entities": self._session_scoped_rows(
-                    connection,
-                    table="memory_entities",
-                    columns=(
-                        "id, user_id, session_id, scope, name, entity_type, "
-                        "identity_summary, aliases, confidence, importance, "
-                        "created_turn_id, created_checkpoint_id, "
-                        "created_checkpoint_sequence, metadata, "
-                        "created_at::text AS created_at, updated_at::text AS updated_at"
+                    select_sql=(
+                        "SELECT e.id, e.title, e.summary, e.event_type, "
+                        "o.user_id, o.session_id, o.scope, o.status, "
+                        "o.confidence, o.importance, o.created_turn_id, "
+                        "o.created_checkpoint_id, cp.sequence AS created_checkpoint_sequence, "
+                        "o.metadata, o.created_at::text AS created_at, "
+                        "o.updated_at::text AS updated_at "
+                        "FROM memory_events e "
+                        "JOIN memory_objects o ON o.id = e.id "
+                        "LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id"
                     ),
                     user_id=user_id,
                     scopes=scopes,
                     limit=selected_limit,
                 ),
-                "properties": self._session_scoped_rows(
+                "descriptions": self._object_scoped_rows(
                     connection,
-                    table="memory_properties",
-                    columns=(
-                        "id, entity_id, user_id, session_id, content, "
-                        "property_type, status, confidence, importance, "
-                        "created_turn_id, created_checkpoint_id, "
-                        "created_checkpoint_sequence, metadata, "
-                        "created_at::text AS created_at, updated_at::text AS updated_at"
+                    select_sql=(
+                        "SELECT d.id, d.event_id, d.content, d.description_type, "
+                        "o.user_id, o.session_id, o.scope, o.status, "
+                        "o.confidence, o.importance, o.created_turn_id, "
+                        "o.created_checkpoint_id, cp.sequence AS created_checkpoint_sequence, "
+                        "o.metadata, o.created_at::text AS created_at, "
+                        "o.updated_at::text AS updated_at "
+                        "FROM memory_descriptions d "
+                        "JOIN memory_objects o ON o.id = d.id "
+                        "LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id"
                     ),
                     user_id=user_id,
                     scopes=scopes,
                     limit=selected_limit,
-                    status_column="status",
                 ),
-                "links": self._checkpoint_scoped_rows(
+                "entities": self._object_scoped_rows(
                     connection,
-                    table="memory_links",
-                    columns=(
-                        "id, user_id, from_type, from_id, to_type, to_id, "
-                        "relation_type, reason, status, confidence, "
-                        "created_turn_id, created_checkpoint_id, "
-                        "created_checkpoint_sequence, metadata, "
-                        "created_at::text AS created_at, updated_at::text AS updated_at"
+                    select_sql=(
+                        "SELECT ent.id, ent.name, ent.entity_type, ent.identity_summary, "
+                        "COALESCE(alias_rows.aliases, '[]'::jsonb) AS aliases, "
+                        "o.user_id, o.session_id, o.scope, o.status, "
+                        "o.confidence, o.importance, o.created_turn_id, "
+                        "o.created_checkpoint_id, cp.sequence AS created_checkpoint_sequence, "
+                        "o.metadata, o.created_at::text AS created_at, "
+                        "o.updated_at::text AS updated_at "
+                        "FROM memory_entities ent "
+                        "JOIN memory_objects o ON o.id = ent.id "
+                        "LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id "
+                        "LEFT JOIN ("
+                        "SELECT entity_id, jsonb_agg(alias ORDER BY position) AS aliases "
+                        "FROM memory_entity_aliases GROUP BY entity_id"
+                        ") alias_rows ON alias_rows.entity_id = ent.id"
                     ),
                     user_id=user_id,
-                    checkpoint_ids=checkpoint_ids,
-                    limit=selected_limit,
-                    status_column="status",
-                ),
-                "time_refs": self._checkpoint_scoped_rows(
-                    connection,
-                    table="memory_time_refs",
-                    columns=(
-                        "id, raw_text, time_kind, timeline_kind, certainty, "
-                        "anchor_timezone, anchor_utc_offset, anchor_message_id, "
-                        "resolved_start, resolved_end, granularity, description, "
-                        "duration_text, recurrence_text, created_turn_id, "
-                        "created_checkpoint_id, created_checkpoint_sequence, "
-                        "metadata, created_at::text AS created_at, "
-                        "updated_at::text AS updated_at"
-                    ),
-                    user_id=None,
-                    checkpoint_ids=checkpoint_ids,
+                    scopes=scopes,
                     limit=selected_limit,
                 ),
-                "time_links": self._checkpoint_scoped_rows(
+                "properties": self._object_scoped_rows(
                     connection,
-                    table="memory_time_links",
-                    columns=(
-                        "id, target_type, target_id, time_ref_id, time_role, "
-                        "confidence, created_turn_id, created_checkpoint_id, "
-                        "created_checkpoint_sequence, metadata, "
-                        "created_at::text AS created_at, updated_at::text AS updated_at"
+                    select_sql=(
+                        "SELECT p.id, p.entity_id, p.content, p.property_type, "
+                        "o.user_id, o.session_id, o.scope, o.status, "
+                        "o.confidence, o.importance, o.created_turn_id, "
+                        "o.created_checkpoint_id, cp.sequence AS created_checkpoint_sequence, "
+                        "o.metadata, o.created_at::text AS created_at, "
+                        "o.updated_at::text AS updated_at "
+                        "FROM memory_properties p "
+                        "JOIN memory_objects o ON o.id = p.id "
+                        "LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id"
                     ),
-                    user_id=None,
-                    checkpoint_ids=checkpoint_ids,
+                    user_id=user_id,
+                    scopes=scopes,
+                    limit=selected_limit,
+                ),
+                "links": self._object_scoped_rows(
+                    connection,
+                    select_sql=(
+                        "SELECT r.id, from_object.object_type AS from_type, "
+                        "r.from_object_id AS from_id, to_object.object_type AS to_type, "
+                        "r.to_object_id AS to_id, r.relation_type, r.reason, "
+                        "o.user_id, o.session_id, o.scope, o.status, "
+                        "o.confidence, o.importance, o.created_turn_id, "
+                        "o.created_checkpoint_id, cp.sequence AS created_checkpoint_sequence, "
+                        "o.metadata, o.created_at::text AS created_at, "
+                        "o.updated_at::text AS updated_at "
+                        "FROM memory_relations r "
+                        "JOIN memory_objects o ON o.id = r.id "
+                        "JOIN memory_objects from_object ON from_object.id = r.from_object_id "
+                        "JOIN memory_objects to_object ON to_object.id = r.to_object_id "
+                        "LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id"
+                    ),
+                    user_id=user_id,
+                    scopes=scopes,
+                    limit=selected_limit,
+                ),
+                "time_refs": self._object_scoped_rows(
+                    connection,
+                    select_sql=(
+                        "SELECT tr.id, tr.raw_text, tr.time_kind, tr.timeline_kind, "
+                        "tr.certainty, tr.anchor_timezone, tr.anchor_utc_offset, "
+                        "tr.anchor_message_id, tr.resolved_start, tr.resolved_end, "
+                        "tr.granularity, tr.description, tr.duration_text, "
+                        "tr.recurrence_text, o.user_id, o.session_id, o.scope, "
+                        "o.status, o.confidence, o.importance, o.created_turn_id, "
+                        "o.created_checkpoint_id, cp.sequence AS created_checkpoint_sequence, "
+                        "o.metadata, o.created_at::text AS created_at, "
+                        "o.updated_at::text AS updated_at "
+                        "FROM memory_time_refs tr "
+                        "JOIN memory_objects o ON o.id = tr.id "
+                        "LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id"
+                    ),
+                    user_id=user_id,
+                    scopes=scopes,
+                    limit=selected_limit,
+                ),
+                "time_links": self._object_scoped_rows(
+                    connection,
+                    select_sql=(
+                        "SELECT tl.id, target_object.object_type AS target_type, "
+                        "tl.target_object_id AS target_id, "
+                        "tl.time_ref_object_id AS time_ref_id, tl.time_role, "
+                        "o.user_id, o.session_id, o.scope, o.status, "
+                        "o.confidence, o.importance, o.created_turn_id, "
+                        "o.created_checkpoint_id, cp.sequence AS created_checkpoint_sequence, "
+                        "o.metadata, o.created_at::text AS created_at, "
+                        "o.updated_at::text AS updated_at "
+                        "FROM memory_time_links tl "
+                        "JOIN memory_objects o ON o.id = tl.id "
+                        "JOIN memory_objects target_object ON target_object.id = tl.target_object_id "
+                        "LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id"
+                    ),
+                    user_id=user_id,
+                    scopes=scopes,
                     limit=selected_limit,
                 ),
             }
@@ -219,7 +244,7 @@ class PostgresConversationDebugRepository:
                 "visible_checkpoint_ids": checkpoint_ids,
                 "limit": selected_limit,
             },
-            "generic_memories": generic_memories,
+            "generic_memories": [],
             "normalized_memories": normalized_memories,
         }
 
@@ -242,129 +267,27 @@ class PostgresConversationDebugRepository:
         ).fetchall()
         return [row["id"] for row in rows]
 
-    def _generic_memories(
+    def _object_scoped_rows(
         self,
         connection: Any,
         *,
+        select_sql: str,
         user_id: str,
         scopes: Sequence[Mapping[str, Any]],
         limit: int,
     ) -> list[dict[str, Any]]:
-        scope_sql, scope_params = _memory_record_scope_condition(scopes)
+        scope_sql, scope_params = _memory_object_scope_condition(scopes)
         rows = connection.execute(
             f"""
-            SELECT
-                id, memory_type, text, user_id, session_id, metadata,
-                created_turn_id, created_checkpoint_id,
-                created_checkpoint_sequence, created_at::text AS created_at,
-                updated_at::text AS updated_at
-            FROM memory_records
-            WHERE (user_id IS NULL OR user_id = %s)
+            {select_sql}
+            WHERE (o.user_id IS NULL OR o.user_id = %s)
+              AND o.status = 'active'
               AND {scope_sql}
-            ORDER BY COALESCE(created_checkpoint_sequence, -1) ASC,
-                     created_at ASC, id ASC
+            ORDER BY COALESCE(cp.sequence, -1) ASC,
+                     o.updated_at ASC, id ASC
             LIMIT %s
             """,
             (user_id, *scope_params, limit),
-        ).fetchall()
-        source_refs = self._memory_source_refs(
-            connection,
-            [row["id"] for row in rows],
-        )
-        return [
-            {
-                **_json_ready(row),
-                "source_refs": source_refs.get(row["id"], []),
-            }
-            for row in rows
-        ]
-
-    def _memory_source_refs(
-        self,
-        connection: Any,
-        memory_record_ids: Sequence[str],
-    ) -> dict[str, list[dict[str, Any]]]:
-        ids = [record_id for record_id in memory_record_ids if record_id]
-        if not ids:
-            return {}
-        rows = connection.execute(
-            f"""
-            SELECT
-                memory_record_id, position, source_type, source_id, quote,
-                span_start, span_end, metadata
-            FROM memory_source_refs
-            WHERE memory_record_id IN ({_placeholders(ids)})
-            ORDER BY memory_record_id ASC, position ASC
-            """,
-            tuple(ids),
-        ).fetchall()
-        grouped: dict[str, list[dict[str, Any]]] = {record_id: [] for record_id in ids}
-        for row in rows:
-            grouped.setdefault(row["memory_record_id"], []).append(_json_ready(row))
-        return grouped
-
-    def _session_scoped_rows(
-        self,
-        connection: Any,
-        *,
-        table: str,
-        columns: str,
-        user_id: str,
-        scopes: Sequence[Mapping[str, Any]],
-        limit: int,
-        status_column: str | None = None,
-    ) -> list[dict[str, Any]]:
-        scope_sql, scope_params = _memory_record_scope_condition(scopes)
-        status_sql = f"AND {status_column} = 'active'" if status_column else ""
-        rows = connection.execute(
-            f"""
-            SELECT {columns}
-            FROM {table}
-            WHERE (user_id IS NULL OR user_id = %s)
-              AND {scope_sql}
-              {status_sql}
-            ORDER BY COALESCE(created_checkpoint_sequence, -1) ASC,
-                     updated_at ASC, id ASC
-            LIMIT %s
-            """,
-            (user_id, *scope_params, limit),
-        ).fetchall()
-        return [_json_ready(row) for row in rows]
-
-    def _checkpoint_scoped_rows(
-        self,
-        connection: Any,
-        *,
-        table: str,
-        columns: str,
-        user_id: str | None,
-        checkpoint_ids: Sequence[str],
-        limit: int,
-        status_column: str | None = None,
-    ) -> list[dict[str, Any]]:
-        status_sql = f"AND {status_column} = 'active'" if status_column else ""
-        user_sql = "(user_id IS NULL OR user_id = %s) AND" if user_id is not None else ""
-        checkpoint_sql = "created_checkpoint_id IS NULL"
-        params: list[object] = []
-        if user_id is not None:
-            params.append(user_id)
-        if checkpoint_ids:
-            checkpoint_sql = (
-                f"(created_checkpoint_id IS NULL OR "
-                f"created_checkpoint_id IN ({_placeholders(checkpoint_ids)}))"
-            )
-            params.extend(checkpoint_ids)
-        rows = connection.execute(
-            f"""
-            SELECT {columns}
-            FROM {table}
-            WHERE {user_sql} {checkpoint_sql}
-              {status_sql}
-            ORDER BY COALESCE(created_checkpoint_sequence, -1) ASC,
-                     updated_at ASC, id ASC
-            LIMIT %s
-            """,
-            (*params, limit),
         ).fetchall()
         return [_json_ready(row) for row in rows]
 
@@ -394,10 +317,10 @@ def _session_scope_condition(
     return "(" + " OR ".join(scoped_conditions) + ")", params
 
 
-def _memory_record_scope_condition(
+def _memory_object_scope_condition(
     scopes: Sequence[Mapping[str, Any]],
 ) -> tuple[str, list[object]]:
-    scoped_conditions = ["session_id IS NULL"]
+    scoped_conditions = ["o.session_id IS NULL"]
     params: list[object] = []
     for scope in scopes:
         session_id = scope.get("session_id")
@@ -408,17 +331,17 @@ def _memory_record_scope_condition(
             scoped_conditions.append(
                 """
                 (
-                  session_id = %s
+                  o.session_id = %s
                   AND (
-                    created_checkpoint_sequence IS NULL
-                    OR created_checkpoint_sequence <= %s
+                    o.created_checkpoint_id IS NULL
+                    OR cp.sequence <= %s
                   )
                 )
                 """
             )
             params.extend([session_id, max_sequence])
         else:
-            scoped_conditions.append("session_id = %s")
+            scoped_conditions.append("o.session_id = %s")
             params.append(session_id)
     return "(" + " OR ".join(scoped_conditions) + ")", params
 

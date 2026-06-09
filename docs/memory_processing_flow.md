@@ -148,27 +148,28 @@ MemoryTurnResult(
 - `created_memories`：本次新建的记忆记录。
 - `updated_memories`：本次更新、合并或失效的记忆记录。
 
-第一阶段使用可替换 store 的 memory runtime：active context cache、retriever、reconciler、writer
-和 conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和
-active memory context 中抽取候选记忆；memory runtime 再检索相关旧记忆、生成 write plan，并把
-write plan 应用到当前 `MemoryStore`。本地开发可以使用 `InMemoryMemoryStore`；当 conversation
-使用 PostgreSQL 后端时，默认会同步使用 `PostgresMemoryStore` 保存当前通用 `MemoryRecord`
-信封和 source refs。reconciliation matching 复用 prepare 阶段生成的同一份 search result，
-给 reconciler 生成 direct/expanded candidate groups；prompt context retrieval 在 PostgreSQL
-后端默认先通过 `PostgresNormalizedMemorySearch`
-在数据库层筛选 event/description/entity/property 候选，再通过 `NormalizedMemoryRanker` 按
-匹配质量、scope、importance、confidence 和 recency 重排，最后读取范式化 repository hydrate
-成 prompt view，避免把 raw `link`、`time_link` 等机器关系直接放进 prompt。
+第一阶段使用可替换 runtime：active context cache、retriever、reconciler、writer 和
+conversation 接线都是真实的。默认 `LLMMemoryExtractor` 会从新消息、近期上下文、时区和
+active memory context 中抽取候选记忆；memory runtime 再检索相关旧记忆、生成 write plan。
+本地开发可以使用 `InMemoryMemoryStore`；当 conversation 使用 PostgreSQL 后端时，
+`PersistentMemoryWritePlanApplier` 会把 `MemoryWritePlan` 直接落到 normalized schema，不再先写
+通用 PostgreSQL record 表，也不再通过额外 sync 路径双写。
 
-范式化持久层已经作为独立 repository 起步：`memory/persistence/postgres/` 会创建
-`memory_events`、`memory_descriptions`、`memory_entities`、`memory_properties`、
-`memory_links`、`memory_time_refs`、`memory_time_links` 和 `memory_sources`。当 conversation 使用
-PostgreSQL 后端时，runtime 会通过 `MemoryWriteResultPersistenceSync` 把本轮 write result 中的
-`MemoryRecord` 映射成 `PersistentMemoryBundle`，再写入范式化 repository。
-`NormalizedMemoryContextRetriever` 会接收 search 命中的 object refs，并通过 hydrator 从这些表中
-组装 event/entity 视图：命中 description 会回到 parent event，命中 property 会回到 parent
-entity；event 自动带 description、related entity 和 time；entity 自动带 property 和 related
-event。source 和 link 仍可追溯，但默认不作为 prompt 可见文本。
+reconciliation matching 复用 prepare 阶段生成的同一份 search result，给 reconciler 生成
+direct/expanded candidate groups；prompt context retrieval 在 PostgreSQL 后端默认先通过
+`PostgresNormalizedMemorySearch` 在数据库层筛选 event/description/entity/property 候选，再通过
+`NormalizedMemoryRanker` 按匹配质量、scope、importance、confidence 和 recency 重排，最后读取
+范式化 repository hydrate 成 prompt view，避免把 raw relation、time_link 等机器关系直接放进
+prompt。
+
+范式化持久层由 `memory_objects` 统一承载对象身份和公共字段，具体表保存各类型独有字段：
+`memory_events`、`memory_descriptions`、`memory_entities`、`memory_entity_aliases`、
+`memory_properties`、`memory_relations`、`memory_time_refs`、`memory_time_links` 和
+`memory_sources`。`MemoryRecord` 仍可作为 extractor/reconciler 的内存 DTO，但不再是 PostgreSQL
+存储模型。`NormalizedMemoryContextRetriever` 会接收 search 命中的 object refs，并通过 hydrator
+从这些表中组装 event/entity 视图：命中 description 会回到 parent event，命中 property 会回到
+parent entity；event 自动带 description、related entity 和 time；entity 自动带 property 和
+related event。source 和 relation 仍可追溯，但默认不作为 prompt 可见文本。
 
 当前 normalized ranking 是确定性粗排：search hit 先保留召回时的基础分，再叠加 match quality、
 session/user/global scope、importance、confidence 和 updated_at recency 组件。后续接入
@@ -190,7 +191,7 @@ Extractor contract 当前采用聚合候选输出：
 - 当前 prompt 允许 `event.entities[]` 使用完整 entity contract，也允许顶层 `entity_candidates[]` 输出同一实体及其 properties。
 - 因此同一条用户消息可能让 LLM 同时输出：`event 吃打抛饭经历 -> entity 打抛饭 -> property 打抛饭吃起来很辣`，以及顶层 `entity_candidates -> entity 打抛饭 -> property 打抛饭吃起来很辣`。
 - `parser` 会分别保留这两处结构；`normalizer` 会分别展开 event 内嵌 entity 和顶层 entity，于是可能生成重复的 `property`、`has_property` link 或 `time_link`。
-- 持久化层必须保持幂等：`memory_links` 按 `(from_type, from_id, to_type, to_id, relation_type)` upsert，`memory_time_links` 按 `(target_type, target_id, time_ref_id, time_role)` upsert，避免重复关系导致整轮 memory commit 失败。
+- 持久化层必须保持幂等：`memory_relations` 按 `(from_object_id, to_object_id, relation_type)` upsert，`memory_time_links` 按 `(target_object_id, time_ref_object_id, time_role)` upsert，避免重复关系导致整轮 memory commit 失败。
 - 仍待补强的是 normalizer/reconciler 层的同批候选去重：在写入前合并同一批候选里语义和结构等价的 entity/property/description/link/time_link，减少 debug 噪音、无效 token 和重复写入压力。
 - prompt 后续也可以收紧：如果一个 entity/property 已在 `event.entities[]` 中表达，顶层 `entity_candidates[]` 应只在需要独立补充实体身份或额外属性时输出，避免无意义双写。
 
@@ -241,13 +242,12 @@ conversation 收到动作后可以选择：
 11. conversation 构造 LLM prompt：system prompt、压缩摘要、conversation context、memory context。
 12. conversation 调用 LLM。
 13. conversation 生成 assistant message。
-14. PostgreSQL backend 开启一次 transaction，锁定 session，并在同一事务中写入 user message、assistant message、memory writes 和 conversation checkpoint。
+14. PostgreSQL backend 开启一次 transaction，锁定 session，并在同一事务中写入 user message、assistant message、memory objects 和 conversation checkpoint。
 15. conversation 调用 `memory.commit_turn(...)`，传入 prepare 阶段返回的 snapshot 和 assistant message。
 15. memory 的 `CandidateMemoryMatcher` 复用 snapshot 里的 search result 生成 direct/expanded groups。
 16. memory reconciler 根据候选和 matched groups 生成 `MemoryWritePlan`。
-17. memory writer 把 write plan 应用到当前 `MemoryStore`。
-18. 如果配置了 persistence sync，memory 把 write result 同步写入范式化持久层。
-19. transaction commit 成功后，memory 用新建、挂载和复用的记忆刷新进程内 `ActiveMemoryContext`。
+17. memory writer 把 write plan 应用到当前后端；PostgreSQL 路径直接写 `memory_objects` 和具体类型表。
+18. transaction commit 成功后，memory 用新建、挂载和复用的记忆刷新进程内 `ActiveMemoryContext`。
 
 JSON backend 不提供强原子 checkpoint/branch 能力，仍使用基础对话写入流程。PostgreSQL backend 的 checkpoint/branch 语义见 `docs/conversation_checkpoint_branching.md`。
 
@@ -268,7 +268,7 @@ memory 失败不应该阻断基础对话能力。
 
 ## 9. 当前接口位置
 
-当前已经建立接口，并提供进程内和 PostgreSQL store：
+当前已经建立接口，并提供进程内 runtime 和 PostgreSQL normalized persistence：
 
 - `memory/models.py`：中立数据契约。
 - `memory/interfaces.py`：memory 系统、抽取、存储、检索、上下文策略接口。
@@ -278,8 +278,6 @@ memory 失败不应该阻断基础对话能力。
 - `memory/config.py`：memory runtime 配置，例如是否启用 LLM 抽取、抽取模型、抽取温度和上下文条数。
 - `memory/storage/in_memory.py`：进程内记忆记录 store，不持久化。
 - `memory/storage/ids.py`：不同记忆类型的 id 前缀和 id 生成。
-- `memory/storage/postgres/`：PostgreSQL 版 memory store，当前保存通用 `MemoryRecord`
-  和 `MemorySourceRef`；不是最终范式化记忆表的完整 repository。
 - `memory/context/cache.py`：进程内 `ActiveMemoryContext` 缓存。
 - `memory/context/policy.py`：暂不生成压缩动作的 policy。
 - `memory/extraction/pipeline.py`：最小 LLM 抽取流程，负责调用模型、解析聚合响应并规范化为 `MemoryRecord`。
@@ -288,11 +286,6 @@ memory 失败不应该阻断基础对话能力。
 - `memory/extraction/parser.py`：聚合候选 JSON 响应解析。
 - `memory/extraction/normalizer.py`：把聚合候选拆分为 `MemoryRecord`。
 - `memory/extraction/validation.py`：聚合候选校验，包括 event 必须有 description、时间字段契约等。
-- `memory/persistence/models.py`：范式化持久记忆 DTO。
-- `memory/persistence/interfaces.py`：范式化持久记忆 repository 协议。
-- `memory/persistence/runtime.py`：把 `MemoryWriteResult` 中的通用 `MemoryRecord` 映射成
-  `PersistentMemoryBundle`，并同步写入范式化 repository。
-- `memory/persistence/postgres/`：PostgreSQL 范式化持久记忆 repository、row mapping 和 schema。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/context/simple.py`：基于 scope 和简单文本匹配的 store search、prompt context 渲染。
 - `memory/retrieval/context/normalized/search.py`：normalized search Protocol，以及非 PostgreSQL
@@ -303,19 +296,26 @@ memory 失败不应该阻断基础对话能力。
 - `memory/retrieval/context/normalized/hydrator.py`：把 search hit hydrate 成 parent event/entity 视图。
 - `memory/retrieval/context/normalized/renderer.py`：把 normalized event/entity 视图渲染成 prompt block。
 - `memory/retrieval/context/normalized/retriever.py`：基于范式化 repository 的 prompt context retrieval
-  orchestration；隐藏 raw link/time_link 等低层关系对象。
+  orchestration；隐藏 raw relation/time_link 等低层关系对象。
 - `memory/retrieval/reconciliation/matcher.py`：面向 reconciliation 的候选匹配，输入抽取候选和同一份
   `MemorySearchResult`，返回相关旧记忆、分数、命中原因和 direct/expanded 标记。结果同时提供全局
-  `records` 和按候选分组的 `groups`。第一版使用确定性规则，并严格只做一跳 link/time_link 扩展，
+  `records` 和按候选分组的 `groups`。第一版使用确定性规则，并严格只做一跳 relation/time_link 扩展，
   不调用 LLM 或向量库。
 - `memory/reconciliation/models.py`：reconciliation 请求、证据、操作和 write plan DTO。write plan 只描述 create/reuse/attach/ignore/flag_conflict，不直接修改 store。
 - `memory/reconciliation/interfaces.py`：`MemoryReconciler` 协议，后续 LLM reconciler 和确定性 reconciler 使用同一接口。
 - `memory/reconciliation/deterministic.py`：确定性 baseline reconciler，基于 candidate matcher 的 grouped result 生成最小 write plan。
 - `memory/writing/models.py`：write request、write result 和失败 DTO。
 - `memory/writing/interfaces.py`：`MemoryWritePlanApplier` 协议，负责把 write plan 应用到具体 store。
-- `memory/writing/in_memory.py`：当前通用 write plan applier，处理 create/reuse/attach/ignore/flag_conflict，
-  并维护 candidate id 到最终 record id 的映射；名字保留为历史原因，但依赖的是 `MemoryStore`
-  协议，不再绑定进程内 store。
+- `memory/writing/in_memory.py`：进程内 write plan applier，处理 create/reuse/attach/ignore/flag_conflict，
+  并维护 candidate id 到最终 record id 的映射。
+- `memory/writing/persistent.py`：PostgreSQL normalized write plan applier，把 `MemoryWritePlan`
+  直接写入 `memory_objects` 和具体业务表。
+- `memory/persistence/runtime.py`：把 extractor/reconciler 使用的内存 `MemoryRecord` DTO 转换为
+  `PersistentMemoryBundle`，供 direct persistent writer 保存。
+- `memory/persistence/models.py`：范式化持久记忆 DTO。
+- `memory/persistence/interfaces.py`：范式化持久记忆 repository 协议。
+- `memory/persistence/postgres/`：PostgreSQL normalized repository、row mapping、source repository
+  和 schema；运行时只认 normalized schema。
 - `memory/noop.py`：完全无操作实现，用于测试或临时关闭 memory。
 - `memory/__init__.py`：公共导出。
 

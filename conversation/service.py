@@ -32,11 +32,10 @@ from memory import (
     MemoryTurnPrepareResult,
     MemoryTurnResult,
     MemoryTurnSnapshot,
-    MemoryWriteResultPersistenceSync,
     NormalizedMemoryContextRetriever,
     PostgresNormalizedMemorySearch,
     InMemoryMemorySystem,
-    InMemoryMemoryWritePlanApplier,
+    PersistentMemoryWritePlanApplier,
 )
 
 from .config import ConversationRuntimeConfig, StorageConfig, default_data_dir
@@ -90,22 +89,20 @@ class ConversationService:
         memory_config = MemoryRuntimeConfig.from_env(env_file)
         memory_store: MemoryStore | None = None
         memory_context_retriever: MemoryContextRetriever | None = None
-        persistence_sync: MemoryWriteResultPersistenceSync | None = None
+        memory_write_applier = None
         persistent_repository = None
         if storage_config.backend == "postgres":
             from .storage.postgres import PostgresConversationStore
             from memory.persistence.postgres import (
                 PostgresPersistentMemoryRepository,
             )
-            from memory.storage.postgres import PostgresMemoryStore
 
             store = PostgresConversationStore(storage_config.database_url or "")
             store.checkpoints.fail_incomplete_turns()
-            memory_store = PostgresMemoryStore(storage_config.database_url or "")
             persistent_repository = PostgresPersistentMemoryRepository(
                 storage_config.database_url or ""
             )
-            persistence_sync = MemoryWriteResultPersistenceSync(
+            memory_write_applier = PersistentMemoryWritePlanApplier(
                 persistent_repository
             )
             memory_context_retriever = NormalizedMemoryContextRetriever(
@@ -136,13 +133,13 @@ class ConversationService:
         memory_system = InMemoryMemorySystem(
             store=memory_store,
             context_retriever=memory_context_retriever,
-            persistence_sync=persistence_sync,
+            write_applier=memory_write_applier,
             extractor=extractor,
             debug_recorder=debug_recorder,
         )
         memory_debug_service = MemoryDebugService(
             recorder=debug_recorder,
-            memory_store=memory_system.store,
+            memory_store=None if persistent_repository is not None else memory_system.store,
             active_cache=memory_system.active_cache,
             persistent_repository=persistent_repository,
         )
@@ -376,9 +373,8 @@ class ConversationService:
         if postgres_store is None:
             raise NotImplementedError("PostgreSQL checkpoint store is required")
 
-        from memory.persistence import MemoryWriteResultPersistenceSync
         from memory.persistence.postgres import PostgresPersistentMemoryRepository
-        from memory.storage.postgres import PostgresMemoryStore
+        from memory.writing import PersistentMemoryWritePlanApplier
 
         memory_status = "not_run"
         memory_commit: MemoryTurnResult | None = None
@@ -458,31 +454,29 @@ class ConversationService:
 
                     try:
                         with connection.transaction():
-                            transactional_store = PostgresMemoryStore(
-                                database=getattr(self.memory_system.store, "database"),
-                                connection=connection,
-                                ensure_schema=False,
-                            )
-                            write_applier = InMemoryMemoryWritePlanApplier(
-                                transactional_store
-                            )
-                            persistence_sync = None
-                            base_sync = getattr(
+                            base_applier = getattr(
                                 self.memory_system,
-                                "persistence_sync",
+                                "write_applier",
                                 None,
                             )
-                            if base_sync is not None and isinstance(
-                                base_sync.repository,
+                            if not isinstance(
+                                base_applier,
+                                PersistentMemoryWritePlanApplier,
+                            ) or not isinstance(
+                                base_applier.repository,
                                 PostgresPersistentMemoryRepository,
                             ):
-                                persistence_sync = MemoryWriteResultPersistenceSync(
-                                    _ConnectionPersistentMemoryRepository(
-                                        base_sync.repository,
-                                        connection,
-                                    ),
-                                    adapter=base_sync.adapter,
+                                raise TypeError(
+                                    "PostgreSQL memory commit requires "
+                                    "PersistentMemoryWritePlanApplier"
                                 )
+                            write_applier = PersistentMemoryWritePlanApplier(
+                                _ConnectionPersistentMemoryRepository(
+                                    base_applier.repository,
+                                    connection,
+                                ),
+                                adapter=base_applier.adapter,
+                            )
                             memory_commit = self.memory_system.commit_turn_with_writers(
                                 MemoryTurnCommitInput(
                                     snapshot=memory_prepare.snapshot,
@@ -497,7 +491,6 @@ class ConversationService:
                                     },
                                 ),
                                 write_applier=write_applier,
-                                persistence_sync=persistence_sync,
                             )
                             memory_status = "committed"
                     except Exception as error:
@@ -1347,3 +1340,6 @@ class _ConnectionPersistentMemoryRepository:
 
     def save_bundle(self, bundle):
         return self.repository.save_bundle_in_connection(self.connection, bundle)
+
+    def __getattr__(self, name: str):
+        return getattr(self.repository, name)

@@ -76,12 +76,13 @@ conversation 会在每个 assistant 回复完成后创建一个 checkpoint。可
 
 - `created_turn_id`：哪一轮对话产生了这条记忆。
 - `created_checkpoint_id`：哪一个稳定完成点让这条记忆变为可见。
-- `created_checkpoint_sequence`：该 checkpoint 在 session 可见消息序列中的位置。
+
+`created_checkpoint_sequence` 不作为 memory 表里的 canonical 字段保存；需要判断 branch 可见性或调试展示时，通过 `created_checkpoint_id` join `conversation_checkpoints.sequence` 得到。
 
 当从某个 checkpoint 创建 branch session 时，branch 的记忆可见性规则是：
 
 - 当前 branch session 后续产生的记忆全部可见。
-- 祖先 session 只可见 `created_checkpoint_sequence <= base_checkpoint.sequence` 的记忆。
+- 祖先 session 只可见 `created_checkpoint_id` 对应 sequence 小于等于 `base_checkpoint.sequence` 的记忆。
 - `session_id IS NULL` 的 global/user 记忆仍按 user scope 可见。
 
 这套规则避免回档时删除原有会话或记忆，也避免 branch 读到原 session 在 fork 之后产生的事实。
@@ -570,207 +571,150 @@ CREATE TABLE message_sections (
 );
 ```
 
-### 11.2 `memory_events`
+### 11.2 `memory_objects`
+
+`memory_objects` 是所有持久记忆对象的统一身份表。公共字段只在这里保存，具体业务表只保存本类型独有字段。
+
+```sql
+CREATE TABLE memory_objects (
+    id TEXT PRIMARY KEY,
+    object_type TEXT NOT NULL CHECK (object_type IN (
+        'event', 'description', 'entity', 'property', 'relation',
+        'time_ref', 'time_link', 'message', 'message_section', 'summary'
+    )),
+    user_id TEXT,
+    session_id TEXT,
+    scope TEXT NOT NULL DEFAULT 'session' CHECK (scope IN ('global', 'user', 'session')),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
+    confidence TEXT NOT NULL DEFAULT 'medium' CHECK (confidence IN ('high', 'medium', 'low')),
+    importance TEXT NOT NULL DEFAULT 'medium' CHECK (importance IN ('high', 'medium', 'low')),
+    created_turn_id TEXT,
+    created_checkpoint_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    merged_into_object_id TEXT REFERENCES memory_objects(id) ON DELETE SET NULL,
+    deleted_at TIMESTAMPTZ,
+    deleted_reason TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+```
+
+### 11.3 业务对象表
 
 ```sql
 CREATE TABLE memory_events (
-    id TEXT PRIMARY KEY,
-    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    id TEXT PRIMARY KEY REFERENCES memory_objects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     summary TEXT,
-    event_type TEXT,
-    status TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    merged_into_id TEXT REFERENCES memory_events(id) ON DELETE SET NULL,
-    deleted_at TIMESTAMPTZ,
-    deleted_reason TEXT,
-    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
-    importance TEXT CHECK (importance IN ('high', 'medium', 'low')),
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    event_type TEXT
 );
-```
 
-### 11.3 `memory_descriptions`
-
-```sql
 CREATE TABLE memory_descriptions (
-    id TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY REFERENCES memory_objects(id) ON DELETE CASCADE,
     event_id TEXT NOT NULL REFERENCES memory_events(id) ON DELETE CASCADE,
-    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
     content TEXT NOT NULL,
-    description_type TEXT,
-    status TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    merged_into_id TEXT REFERENCES memory_descriptions(id) ON DELETE SET NULL,
-    deleted_at TIMESTAMPTZ,
-    deleted_reason TEXT,
-    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
-    importance TEXT CHECK (importance IN ('high', 'medium', 'low')),
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    description_type TEXT
 );
-```
 
-### 11.4 `memory_entities`
-
-```sql
 CREATE TABLE memory_entities (
-    id TEXT PRIMARY KEY,
-    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-    scope TEXT NOT NULL DEFAULT 'user' CHECK (scope IN ('global', 'user', 'session')),
+    id TEXT PRIMARY KEY REFERENCES memory_objects(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    entity_type TEXT,
-    identity_summary TEXT,
-    aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    entity_type TEXT NOT NULL,
+    identity_summary TEXT
 );
-```
 
-### 11.5 `memory_properties`
-
-```sql
-CREATE TABLE memory_properties (
-    id TEXT PRIMARY KEY,
+CREATE TABLE memory_entity_aliases (
     entity_id TEXT NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
-    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-    property_name TEXT NOT NULL,
-    property_value TEXT,
-    value_type TEXT DEFAULT 'text',
-    value_json JSONB,
-    property_text TEXT NOT NULL,
-    property_type TEXT,
-    status TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
-    stability TEXT CHECK (stability IN ('stable', 'semi_stable', 'temporary')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    invalidated_by TEXT REFERENCES memory_properties(id) ON DELETE SET NULL,
-    merged_into_id TEXT REFERENCES memory_properties(id) ON DELETE SET NULL,
-    deleted_at TIMESTAMPTZ,
-    deleted_reason TEXT,
-    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
-    importance TEXT CHECK (importance IN ('high', 'medium', 'low')),
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    alias TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_id, alias)
+);
+
+CREATE TABLE memory_properties (
+    id TEXT PRIMARY KEY REFERENCES memory_objects(id) ON DELETE CASCADE,
+    entity_id TEXT NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    property_type TEXT
 );
 ```
 
-### 11.6 `memory_links`
+### 11.4 `memory_relations`
 
-`memory_links` 保留灵活连接能力。由于 `from_id`、`to_id` 是多态引用，数据库不能直接对它们建立真实外键，因此必须在 service 层校验目标对象存在。
+`memory_relations` 替代旧的 link 表设计。关系两端都是真实 `memory_objects(id)` 外键，不再使用多态 `(type, id)` 组合。
 
 ```sql
-CREATE TABLE memory_links (
-    id TEXT PRIMARY KEY,
-    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-    from_type TEXT NOT NULL CHECK (from_type IN ('event', 'description', 'entity', 'property')),
-    from_id TEXT NOT NULL,
-    to_type TEXT NOT NULL CHECK (to_type IN ('event', 'description', 'entity', 'property')),
-    to_id TEXT NOT NULL,
+CREATE TABLE memory_relations (
+    id TEXT PRIMARY KEY REFERENCES memory_objects(id) ON DELETE CASCADE,
+    from_object_id TEXT NOT NULL REFERENCES memory_objects(id) ON DELETE CASCADE,
+    to_object_id TEXT NOT NULL REFERENCES memory_objects(id) ON DELETE CASCADE,
     relation_type TEXT NOT NULL,
     reason TEXT,
-    status TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'archived', 'invalidated', 'expired', 'merged', 'deleted')),
-    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    deleted_at TIMESTAMPTZ,
-    deleted_reason TEXT,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    UNIQUE (from_type, from_id, to_type, to_id, relation_type)
+    UNIQUE (from_object_id, to_object_id, relation_type)
 );
 ```
 
-### 11.7 `memory_sources`
+### 11.5 `memory_sources`
 
-统一来源表用来表达“某个记忆对象由哪些消息、事件或描述支持”。第一阶段 `message_id` 是主要证据外键；`message_section_id`、`span_start`、`span_end`、`evidence_text` 都是可选增强，用于需要更精确定位时再填。
+来源表通过 `object_id` 指向统一对象表。`quote` 是原文证据摘录，不是总结。
 
 ```sql
 CREATE TABLE memory_sources (
     id TEXT PRIMARY KEY,
-    memory_type TEXT NOT NULL CHECK (memory_type IN ('event', 'description', 'property', 'link')),
-    memory_id TEXT NOT NULL,
-    message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
-    message_section_id TEXT REFERENCES message_sections(id) ON DELETE CASCADE,
-    source_type TEXT CHECK (source_type IN ('message', 'message_section', 'event', 'description', 'property', 'link')),
-    source_id TEXT,
+    object_id TEXT NOT NULL REFERENCES memory_objects(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    quote TEXT,
     span_start INTEGER,
     span_end INTEGER,
-    evidence_text TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    CHECK (
-        message_id IS NOT NULL
-        OR message_section_id IS NOT NULL
-        OR (source_type IS NOT NULL AND source_id IS NOT NULL)
-    )
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 ```
 
-### 11.8 `memory_time_refs`
+### 11.6 `memory_time_refs`
 
 `memory_time_refs` 保存语义时间表达本身。真实时间必须记录时区；非现实时间保留叙事位置，不强行规范化。
 
 ```sql
 CREATE TABLE memory_time_refs (
-    id TEXT PRIMARY KEY,
-    raw_text TEXT,
-    time_domain TEXT NOT NULL DEFAULT 'real_world'
-        CHECK (time_domain IN ('real_world', 'narrative', 'fictional', 'life_stage', 'unknown')),
+    id TEXT PRIMARY KEY REFERENCES memory_objects(id) ON DELETE CASCADE,
+    raw_text TEXT NOT NULL,
     time_kind TEXT NOT NULL
-        CHECK (time_kind IN ('instant', 'range', 'duration', 'recurrence', 'relative', 'vague')),
-    certainty TEXT NOT NULL DEFAULT 'unknown'
-        CHECK (certainty IN ('exact', 'approximate', 'vague', 'unknown')),
-
-    anchor_at TIMESTAMPTZ,
-    anchor_timezone TEXT,
-    anchor_utc_offset TEXT,
-
-    normalized_start TIMESTAMPTZ,
-    normalized_end TIMESTAMPTZ,
-    normalized_timezone TEXT,
-    normalized_utc_offset TEXT,
-
-    duration_min NUMERIC,
-    duration_max NUMERIC,
-    duration_unit TEXT,
-    recurrence_rule TEXT,
-
-    calendar_system TEXT DEFAULT 'gregorian',
-    narrative_position TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (time_kind IN ('exact', 'relative', 'vague', 'duration', 'recurring')),
+    timeline_kind TEXT NOT NULL
+        CHECK (timeline_kind IN ('real_world', 'fictional')),
+    certainty TEXT NOT NULL
+        CHECK (certainty IN ('resolved', 'inferred', 'vague', 'unknown')),
+    anchor_timezone TEXT NOT NULL,
+    anchor_utc_offset TEXT NOT NULL,
+    anchor_message_id TEXT,
+    resolved_start TEXT,
+    resolved_end TEXT,
+    granularity TEXT,
+    description TEXT,
+    duration_text TEXT,
+    recurrence_text TEXT
 );
 ```
 
 字段说明：
 
-- `anchor_at` 是理解相对时间时使用的锚点，通常是用户消息的 `created_at` 或系统处理这句话的时间。
+- `anchor_message_id` 是理解相对时间时使用的消息锚点。
 - `anchor_timezone` 保存 IANA 时区名，例如 `Asia/Shanghai`、`America/New_York`。
 - `anchor_utc_offset` 保存记录当时的实际偏移，例如 `+08:00`、`-05:00`。
-- `normalized_start` / `normalized_end` 是在真实世界时间轴上解析出的范围，无法解析或不是现实时间时留空。
-- `normalized_timezone` / `normalized_utc_offset` 用于返回规范化结果时，还原当时记录时区下的本地时间。
-- `time_domain = 'narrative'` 或 `time_domain = 'fictional'` 时，可以只填写 `raw_text`、`narrative_position` 和 `metadata`，不填写 `normalized_start` / `normalized_end`。
+- `resolved_start` / `resolved_end` 是解析出的时间范围字符串，按记录时区保留。
+- `timeline_kind = 'fictional'` 时，可以只填写 `raw_text`、`description` 等语义字段，不强行映射到现实时间轴。
 
-### 11.9 `memory_time_links`
+### 11.7 `memory_time_links`
 
 `memory_time_links` 负责把时间表达挂到任意记忆对象上，并说明这段时间的角色。
 
 ```sql
 CREATE TABLE memory_time_links (
-    id TEXT PRIMARY KEY,
-    memory_type TEXT NOT NULL
-        CHECK (memory_type IN ('event', 'description', 'entity', 'property', 'link', 'message', 'message_section')),
-    memory_id TEXT NOT NULL,
-    time_ref_id TEXT NOT NULL REFERENCES memory_time_refs(id) ON DELETE CASCADE,
+    id TEXT PRIMARY KEY REFERENCES memory_objects(id) ON DELETE CASCADE,
+    target_object_id TEXT NOT NULL REFERENCES memory_objects(id) ON DELETE CASCADE,
+    time_ref_object_id TEXT NOT NULL REFERENCES memory_time_refs(id) ON DELETE CASCADE,
     time_role TEXT NOT NULL
         CHECK (time_role IN (
             'occurred_at',
@@ -784,22 +728,18 @@ CREATE TABLE memory_time_links (
             'recurrence',
             'narrative_time'
         )),
-    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    UNIQUE (memory_type, memory_id, time_ref_id, time_role)
+    UNIQUE (target_object_id, time_ref_object_id, time_role)
 );
 ```
 
-### 11.10 `memory_embeddings`
+### 11.8 `memory_embeddings`
 
 第一阶段可以先存 embedding 元信息和向量文本占位。真正启用向量检索时，建议安装 `pgvector`，把 `embedding` 改为 `vector(n)`。
 
 ```sql
 CREATE TABLE memory_embeddings (
     id TEXT PRIMARY KEY,
-    memory_type TEXT NOT NULL CHECK (memory_type IN ('event', 'description', 'entity', 'property', 'link', 'message', 'message_section')),
-    memory_id TEXT NOT NULL,
+    object_id TEXT NOT NULL REFERENCES memory_objects(id) ON DELETE CASCADE,
     embedding_model TEXT NOT NULL,
     embedding_dimensions INTEGER,
     embedding JSONB,
@@ -809,7 +749,7 @@ CREATE TABLE memory_embeddings (
     last_accessed_at TIMESTAMPTZ,
     access_count INTEGER NOT NULL DEFAULT 0,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    UNIQUE (memory_type, memory_id, embedding_model, content_hash)
+    UNIQUE (object_id, embedding_model, content_hash)
 );
 ```
 
@@ -819,20 +759,20 @@ CREATE TABLE memory_embeddings (
 
 - `message_sections(message_id, section_index)` 设置唯一约束。
 - `message_sections(session_id, created_at)`、`message_sections(user_id, created_at)` 建索引。
-- `memory_events(user_id, event_type, status)` 建索引。
-- `memory_events(user_id, status, importance)` 建索引。
-- `memory_descriptions(event_id)`、`memory_descriptions(user_id, status)` 建索引。
-- `memory_entities(scope, user_id)`、`memory_entities(scope, session_id)` 建索引，用于限定候选实体范围。
-- `memory_properties(entity_id, property_name, status)` 建复合索引。
-- `memory_properties(user_id, status, importance)` 建索引。
-- `memory_links(from_type, from_id)` 和 `memory_links(to_type, to_id)` 建索引。
-- `memory_sources(memory_type, memory_id)`、`memory_sources(message_id)` 和 `memory_sources(message_section_id)` 建索引。
-- `memory_time_refs(time_domain, time_kind, certainty)` 建索引。
-- `memory_time_refs(normalized_start, normalized_end)` 建索引，用于真实世界时间范围过滤。
-- `memory_time_links(memory_type, memory_id, time_role)` 和 `memory_time_links(time_ref_id)` 建索引。
-- `memory_embeddings(memory_type, memory_id)` 建索引。
+- `memory_objects(scope, user_id, session_id, status)` 建索引。
+- `memory_objects(session_id, created_checkpoint_id, status)` 建索引。
+- `memory_objects(object_type, updated_at)` 建索引。
+- `memory_events(event_type)` 建索引。
+- `memory_descriptions(event_id)` 建索引。
+- `memory_entities(name)` 和 `memory_entity_aliases(alias)` 建索引。
+- `memory_properties(entity_id)` 建索引。
+- `memory_relations(from_object_id)` 和 `memory_relations(to_object_id)` 建索引。
+- `memory_sources(object_id)` 和 `memory_sources(source_type, source_id)` 建索引。
+- `memory_time_refs(timeline_kind, time_kind, certainty)` 建索引。
+- `memory_time_links(target_object_id, time_role)` 和 `memory_time_links(time_ref_object_id)` 建索引。
+- `memory_embeddings(object_id)` 建索引。
 
-`memory_sources`、`memory_links`、`memory_time_links`、`memory_embeddings` 这类多态引用表不能完全依赖数据库外键保证目标存在，必须在 repository/service 层做引用检查。需要强一致时，可以额外增加 `memory_objects` 注册表，把所有可引用对象统一登记后再建立外键。
+除 source 的外部 `source_type/source_id` 外，持久记忆对象之间的引用应通过 `memory_objects(id)` 建立真实外键。`created_checkpoint_sequence` 不作为 memory 表字段保存，需要判断分支可见性时通过 `created_checkpoint_id` join `conversation_checkpoints(sequence)`。
 
 ## 13. 图数据库映射
 
