@@ -2,7 +2,6 @@
 
 from .context import SimpleMemoryContextRenderer, SimpleMemoryContextRetriever
 from .context.normalized import (
-    FallbackNormalizedMemorySearch,
     NormalizedEntityMemoryView,
     NormalizedEventMemoryView,
     NormalizedMemoryContextRetriever,
@@ -21,7 +20,6 @@ __all__ = [
     "CandidateMemoryMatcher",
     "CandidateRelatedGroup",
     "CandidateRetrievalResult",
-    "FallbackNormalizedMemorySearch",
     "NormalizedEntityMemoryView",
     "NormalizedEventMemoryView",
     "NormalizedMemoryContextRetriever",

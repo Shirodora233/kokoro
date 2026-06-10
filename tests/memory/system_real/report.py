@@ -55,7 +55,7 @@ def build_report(
         "## Scope",
         "",
         "This report tests the real `LLMMemoryExtractor` wired through "
-        "`InMemoryMemorySystem`: prompt construction, real LLM extraction, "
+        "`MemoryRuntime`: prompt construction, real LLM extraction, "
         "candidate retrieval, deterministic reconciliation, write-plan "
         "application, active-memory refresh, and prompt-context retrieval. It "
         "still uses an in-memory store rather than PostgreSQL memory tables.",

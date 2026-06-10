@@ -23,7 +23,7 @@ from memory.retrieval import (
     NormalizedMemoryContextRetriever,
     PostgresNormalizedMemorySearch,
 )
-from memory.system import InMemoryMemorySystem
+from memory.system import MemoryRuntime
 from memory.writing import PersistentMemoryWritePlanApplier
 from tests.memory.system_real.recording import RecordingChatClient, TokenUsage
 
@@ -143,7 +143,7 @@ def _run_scenario(
     session_id: str,
 ) -> ScenarioCapture:
     repository = PostgresPersistentMemoryRepository(database_url)
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=LLMMemoryExtractor(
             chat_client=chat_client,
             model=memory_config.extraction_model or llm_config.model,

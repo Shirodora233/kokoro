@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from tempfile import TemporaryDirectory
 
-from conversation.service import ConversationService
-from conversation.storage import JsonConversationStore
-from llm.config import LLMConfig
 from llm.interfaces import ChatCompletionResult, ChatMessageParam
-from memory import LLMMemoryExtractor, MemoryDebugRecorder, MemoryDebugService
+from memory import LLMMemoryExtractor, MemoryDebugRecorder
 from memory.models import (
     MemoryContextBlock,
     MemoryInputMessage,
@@ -27,8 +23,7 @@ from memory.models import (
     MemoryTurnResult,
     MemoryTurnSnapshot,
 )
-from memory.system import InMemoryMemorySystem
-from web_frontend.server import KokoroRequestHandler
+from memory.system import MemoryRuntime
 
 from .fixtures import (
     SESSION_ID,
@@ -49,13 +44,11 @@ def main() -> int:
         test_prepare_turn_searches_without_writing,
         test_commit_turn_reuses_prepare_snapshot,
         test_commit_turn_keeps_retrieved_events_active,
-        test_conversation_send_message_prepares_before_llm_and_commits_after,
         test_llm_extraction_debug_records_raw_and_normalized_candidates,
         test_llm_extraction_debug_marks_raw_truncation,
         test_llm_extraction_debug_records_parse_error,
         test_llm_extraction_debug_records_validation_errors,
         test_prepare_turn_debug_records_simple_retrieval,
-        test_web_debug_api_returns_memory_and_traces_without_raw_by_default,
     ]
     for test in tests:
         test()
@@ -65,7 +58,7 @@ def main() -> int:
 
 
 def test_prepare_commit_writes_created_candidates() -> None:
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=SequenceMemoryExtractor(
             [[candidate("entity", "茉莉花茶", "cand_tea")]]
         )
@@ -85,7 +78,7 @@ def test_prepare_commit_writes_created_candidates() -> None:
 
 
 def test_prepare_commit_reuses_entity_and_attaches_property() -> None:
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=SequenceMemoryExtractor(
             [
                 [candidate("entity", "茉莉花茶", "cand_tea")],
@@ -135,7 +128,7 @@ def test_prepare_commit_reuses_entity_and_attaches_property() -> None:
 
 
 def test_empty_extraction_keeps_system_operational() -> None:
-    system = InMemoryMemorySystem(extractor=SequenceMemoryExtractor([[]]))
+    system = MemoryRuntime(extractor=SequenceMemoryExtractor([[]]))
 
     result = _prepare_and_commit(system, make_turn("msg_empty", "只是闲聊一下。"))
 
@@ -146,7 +139,7 @@ def test_empty_extraction_keeps_system_operational() -> None:
 
 
 def test_retrieve_context_uses_active_and_stored_records() -> None:
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=SequenceMemoryExtractor(
             [[candidate("entity", "静安门诊", "cand_clinic")]]
         )
@@ -170,7 +163,7 @@ def test_retrieve_context_uses_active_and_stored_records() -> None:
 
 
 def test_prepare_turn_searches_without_writing() -> None:
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=SequenceMemoryExtractor(
             [[candidate("entity", "林医生", "cand_doctor")]]
         )
@@ -184,7 +177,7 @@ def test_prepare_turn_searches_without_writing() -> None:
 
 
 def test_commit_turn_reuses_prepare_snapshot() -> None:
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=SequenceMemoryExtractor(
             [[candidate("entity", "林医生", "cand_doctor")]]
         )
@@ -213,7 +206,7 @@ def test_commit_turn_keeps_retrieved_events_active() -> None:
         text="美食推荐询问",
         metadata={"normalized": True},
     )
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=SequenceMemoryExtractor([[]]),
         context_retriever=_StaticContextRetriever([retrieved_event]),
     )
@@ -228,49 +221,6 @@ def test_commit_turn_keeps_retrieved_events_active() -> None:
     assert result.metadata["active_memory_context"]["event_memories"][0]["id"] == (
         "evt_existing_food"
     )
-
-
-def test_conversation_send_message_prepares_before_llm_and_commits_after() -> None:
-    events: list[str] = []
-    memory_system = _RecordingMemorySystem(events)
-    chat_client = _RecordingChatClient(events)
-
-    with TemporaryDirectory() as data_dir:
-        store = JsonConversationStore(data_dir)
-        service = ConversationService(
-            store=store,
-            chat_client=chat_client,  # type: ignore[arg-type]
-            config=LLMConfig(
-                api_key="test-key",
-                base_url=None,
-                model="test-model",
-            ),
-            memory_system=memory_system,  # type: ignore[arg-type]
-            timezone=TIMEZONE,
-        )
-        user = service.create_user("alice")
-        session = service.start_session(user.id)
-
-        user_message, assistant_message = service.send_message(
-            session.id,
-            "我明天要和林医生复诊。",
-        )
-
-    assert events == ["prepare", "llm", "commit"]
-    assert memory_system.prepare_turn_input is not None
-    assert memory_system.prepare_turn_input.new_message.id == user_message.id
-    assert memory_system.prepare_turn_input.conversation_context[-1].id == user_message.id
-    assert chat_client.messages is not None
-    assert any(
-        message["role"] == "system"
-        and "Memory context:\nprepared memory context" in message["content"]
-        for message in chat_client.messages
-    )
-    assert memory_system.commit_input is not None
-    assert memory_system.commit_input.snapshot is memory_system.snapshot
-    assert memory_system.commit_input.assistant_message is not None
-    assert memory_system.commit_input.assistant_message.id == assistant_message.id
-    assert memory_system.commit_input.assistant_message.role == "assistant"
 
 
 def test_llm_extraction_debug_records_raw_and_normalized_candidates() -> None:
@@ -359,7 +309,7 @@ def test_llm_extraction_debug_records_validation_errors() -> None:
 
 def test_prepare_turn_debug_records_simple_retrieval() -> None:
     recorder = MemoryDebugRecorder()
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=SequenceMemoryExtractor(
             [[candidate("entity", "茉莉花茶", "cand_tea_again")]]
         ),
@@ -386,76 +336,6 @@ def test_prepare_turn_debug_records_simple_retrieval() -> None:
     assert first_hit["reason"] == "store_text_match"
     assert retrieval["retrieval_result"]["metadata"]["context_block_count"] == 1
     assert retrieval["memory_context"]
-
-
-def test_web_debug_api_returns_memory_and_traces_without_raw_by_default() -> None:
-    recorder = MemoryDebugRecorder(max_raw_chars=10_000)
-    extraction_chat_client = _StaticChatClient(_valid_extraction_json())
-    memory_system = InMemoryMemorySystem(
-        extractor=LLMMemoryExtractor(
-            chat_client=extraction_chat_client,  # type: ignore[arg-type]
-            debug_recorder=recorder,
-        ),
-        debug_recorder=recorder,
-    )
-    chat_client = _StaticChatClient("好的。")
-
-    with TemporaryDirectory() as data_dir:
-        store = JsonConversationStore(data_dir)
-        service = ConversationService(
-            store=store,
-            chat_client=chat_client,  # type: ignore[arg-type]
-            config=LLMConfig(
-                api_key="test-key",
-                base_url=None,
-                model="test-model",
-            ),
-            memory_system=memory_system,
-            memory_debug_service=MemoryDebugService(
-                recorder=recorder,
-                memory_store=memory_system.store,
-                active_cache=memory_system.active_cache,
-            ),
-            timezone=TIMEZONE,
-        )
-        user = service.create_user("alice")
-        session = service.start_session(user.id)
-        handler = object.__new__(KokoroRequestHandler)
-        handler.service = service
-
-        response = handler._route_api(
-            "POST",
-            f"/api/sessions/{session.id}/messages",
-            {"debug": ["true"]},
-            {"content": "茉莉花茶少糖。"},
-        )
-        trace_id = response["memory_debug_trace_id"]
-        trace_response = handler._route_api(
-            "GET",
-            f"/api/debug/memory/traces/{trace_id}",
-            {},
-            {},
-        )
-        raw_trace_response = handler._route_api(
-            "GET",
-            f"/api/debug/memory/traces/{trace_id}",
-            {"include_raw": ["1"]},
-            {},
-        )
-        memory_response = handler._route_api(
-            "GET",
-            "/api/debug/memory",
-            {"session_id": [session.id], "limit": ["20"]},
-            {},
-        )
-
-    assert trace_id
-    assert response["memory_debug_trace"]["trace_id"] == trace_id
-    assert "raw_output" not in trace_response["trace"]["extraction"]
-    assert "prompt_messages" not in trace_response["trace"]["extraction"]
-    assert raw_trace_response["trace"]["extraction"]["raw_output"]
-    assert memory_response["memory"]["generic_memories"]
-    assert memory_response["memory"]["active_memory_context"] is not None
 
 
 class _StaticContextRetriever:
@@ -579,9 +459,9 @@ class _StaticChatClient:
 def _llm_debug_system(
     extraction_response: str,
     recorder: MemoryDebugRecorder,
-) -> InMemoryMemorySystem:
+) -> MemoryRuntime:
     chat_client = _StaticChatClient(extraction_response)
-    return InMemoryMemorySystem(
+    return MemoryRuntime(
         extractor=LLMMemoryExtractor(
             chat_client=chat_client,  # type: ignore[arg-type]
             debug_recorder=recorder,
@@ -634,7 +514,7 @@ def _invalid_event_extraction_json() -> str:
 
 
 def _prepare_and_commit(
-    system: InMemoryMemorySystem,
+    system: MemoryRuntime,
     turn,
 ):
     prepare = system.prepare_turn(turn)

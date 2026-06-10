@@ -249,7 +249,7 @@ conversation 收到动作后可以选择：
 17. memory writer 把 write plan 应用到当前后端；PostgreSQL 路径直接写 `memory_objects` 和具体类型表。
 18. transaction commit 成功后，memory 用新建、挂载和复用的记忆刷新进程内 `ActiveMemoryContext`。
 
-JSON backend 不提供强原子 checkpoint/branch 能力，仍使用基础对话写入流程。PostgreSQL backend 的 checkpoint/branch 语义见 `docs/conversation_checkpoint_branching.md`。
+conversation runtime 只支持 PostgreSQL backend；checkpoint/branch 是默认且必需的提交语义，见 `docs/conversation_checkpoint_branching.md`。
 
 commit 默认只把用户消息作为持久事实 source；assistant 回复只进入 commit metadata/context，
 避免把模型回复误当成用户事实再次写入。
@@ -272,7 +272,7 @@ memory 失败不应该阻断基础对话能力。
 
 - `memory/models.py`：中立数据契约。
 - `memory/interfaces.py`：memory 系统、抽取、存储、检索、上下文策略接口。
-- `memory/system.py`：`InMemoryMemorySystem`，组合抽取、context retrieval、candidate matching、
+- `memory/system.py`：`MemoryRuntime`，组合抽取、context retrieval、candidate matching、
   reconciliation、write plan application、活跃缓存和上下文策略；入口是 `prepare_turn` 和
   `commit_turn`。
 - `memory/config.py`：memory runtime 配置，例如是否启用 LLM 抽取、抽取模型、抽取温度和上下文条数。
@@ -288,8 +288,7 @@ memory 失败不应该阻断基础对话能力。
 - `memory/extraction/validation.py`：聚合候选校验，包括 event 必须有 description、时间字段契约等。
 - `memory/extraction/noop.py`：不抽取候选记忆的 extractor，用于测试或临时关闭。
 - `memory/retrieval/context/simple.py`：基于 scope 和简单文本匹配的 store search、prompt context 渲染。
-- `memory/retrieval/context/normalized/search.py`：normalized search Protocol，以及非 PostgreSQL
-  repository 的 fallback search。
+- `memory/retrieval/context/normalized/search.py`：normalized search Protocol。
 - `memory/retrieval/context/normalized/postgres_search.py`：PostgreSQL normalized search，负责在数据库层
   筛选 event/description/entity/property。
 - `memory/retrieval/context/normalized/ranking.py`：normalized search hit 的确定性 ranking 规则。

@@ -370,7 +370,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--env-file", default=str(ROOT_DIR / ".env"))
-    parser.add_argument("--data-dir", default=None)
     return parser
 
 
@@ -378,7 +377,6 @@ def main() -> None:
     args = build_parser().parse_args()
     KokoroRequestHandler.service = ConversationService.default(
         env_file=Path(args.env_file),
-        data_dir=Path(args.data_dir) if args.data_dir else None,
     )
     server = ThreadingHTTPServer((args.host, args.port), KokoroRequestHandler)
     print(f"Serving Kokoro web frontend at http://{args.host}:{args.port}")

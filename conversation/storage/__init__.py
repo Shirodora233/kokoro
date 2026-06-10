@@ -1,5 +1,5 @@
 """Conversation storage backends."""
 
-from .json import JsonConversationStore
+from .postgres import PostgresConversationStore
 
-__all__ = ["JsonConversationStore"]
+__all__ = ["PostgresConversationStore"]

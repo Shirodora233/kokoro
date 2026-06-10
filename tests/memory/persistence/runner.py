@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from conversation.config import StorageConfig
+from conversation.storage.postgres import PostgresConversationStore
 from memory.models import (
     MemoryRecord,
     MemoryRetrievalRequest,
@@ -58,6 +59,7 @@ ALL_IDS = [
 
 def main() -> int:
     config = StorageConfig.from_env(".env")
+    PostgresConversationStore(config.database_url)
     repository = PostgresPersistentMemoryRepository(config.database_url)
     tests = [
         test_save_and_load_bundle,

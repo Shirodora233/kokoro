@@ -1,4 +1,4 @@
-"""In-memory memory system composition."""
+"""Memory runtime composition."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from .writing import (
 LOGGER = logging.getLogger(__name__)
 
 
-class InMemoryMemorySystem(MemorySystem):
+class MemoryRuntime(MemorySystem):
     """Process-local memory runtime with replaceable components."""
 
     def __init__(
@@ -262,7 +262,7 @@ class InMemoryMemorySystem(MemorySystem):
             updated_memories=write_result.reused_records,
             metadata={
                 "memory_runtime": self.__class__.__name__,
-                "memory_store": self.store.__class__.__name__,
+                "runtime_store": self.store.__class__.__name__,
                 "active_memory_context": refreshed_context.to_record(),
                 "snapshot": snapshot.to_record(),
                 "candidate_matching": candidate_retrieval.to_record(),

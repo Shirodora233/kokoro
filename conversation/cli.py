@@ -12,7 +12,6 @@ from .service import ConversationService
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Persistent LLM conversation system")
     parser.add_argument("--env-file", default=".env", help="Path to .env file")
-    parser.add_argument("--data-dir", default=None, help="Directory for JSON table files")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -97,10 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    service = ConversationService.default(
-        env_file=Path(args.env_file),
-        data_dir=Path(args.data_dir) if args.data_dir else None,
-    )
+    service = ConversationService.default(env_file=Path(args.env_file))
     try:
         run_command(args, service)
     except NotImplementedError as error:

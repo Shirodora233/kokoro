@@ -131,9 +131,8 @@ class DialogueAPI:
 
 def create_default_api(
     env_file: str | Path = ".env",
-    data_dir: str | Path | None = None,
 ) -> DialogueAPI:
-    return DialogueAPI(ConversationService.default(env_file=env_file, data_dir=data_dir))
+    return DialogueAPI(ConversationService.default(env_file=env_file))
 
 
 def format_transcript(messages: list[Message]) -> str:

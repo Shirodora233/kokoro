@@ -11,7 +11,7 @@ from ....models import (
 from ....persistence import PersistentMemoryRepository
 from .hydrator import NormalizedMemoryHydrator
 from .renderer import NormalizedMemoryContextRenderer
-from .search import FallbackNormalizedMemorySearch, NormalizedMemorySearch
+from .search import NormalizedMemorySearch
 
 
 class NormalizedMemoryContextRetriever:
@@ -24,17 +24,14 @@ class NormalizedMemoryContextRetriever:
     def __init__(
         self,
         repository: PersistentMemoryRepository,
-        search: NormalizedMemorySearch | None = None,
+        search: NormalizedMemorySearch,
         renderer: NormalizedMemoryContextRenderer | None = None,
         hydrator: NormalizedMemoryHydrator | None = None,
         default_limit: int = 8,
         pool_limit: int = 40,
     ) -> None:
         self.repository = repository
-        self.searcher = search or FallbackNormalizedMemorySearch(
-            repository,
-            pool_limit=pool_limit,
-        )
+        self.searcher = search
         self.renderer = renderer or NormalizedMemoryContextRenderer()
         self.hydrator = hydrator or NormalizedMemoryHydrator(
             repository,

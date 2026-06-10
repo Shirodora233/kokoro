@@ -1,7 +1,6 @@
 """Prompt context retrieval implementations."""
 
 from .normalized import (
-    FallbackNormalizedMemorySearch,
     HydratedMemoryViews,
     NormalizedEntityMemoryView,
     NormalizedEventMemoryView,
@@ -16,7 +15,6 @@ from .normalized import (
 from .simple import SimpleMemoryContextRenderer, SimpleMemoryContextRetriever
 
 __all__ = [
-    "FallbackNormalizedMemorySearch",
     "HydratedMemoryViews",
     "NormalizedEntityMemoryView",
     "NormalizedEventMemoryView",

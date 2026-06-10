@@ -244,7 +244,6 @@ class PostgresConversationDebugRepository:
                 "visible_checkpoint_ids": checkpoint_ids,
                 "limit": selected_limit,
             },
-            "generic_memories": [],
             "normalized_memories": normalized_memories,
         }
 

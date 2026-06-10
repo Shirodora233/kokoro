@@ -25,7 +25,6 @@ from memory import (
     MemoryRuntimeConfig,
     MemorySearchResult,
     MemorySourceRef,
-    MemoryStore,
     MemorySystem,
     MemoryTurnCommitInput,
     MemoryTurnInput,
@@ -34,13 +33,12 @@ from memory import (
     MemoryTurnSnapshot,
     NormalizedMemoryContextRetriever,
     PostgresNormalizedMemorySearch,
-    InMemoryMemorySystem,
+    MemoryRuntime,
     PersistentMemoryWritePlanApplier,
 )
 
-from .config import ConversationRuntimeConfig, StorageConfig, default_data_dir
+from .config import ConversationRuntimeConfig, StorageConfig
 from .context import ModelContext, PaginatedMessages, SessionManager
-from .interfaces import ConversationStore
 from .models import (
     ChatSession,
     ConversationCheckpoint,
@@ -51,7 +49,7 @@ from .models import (
     User,
     utc_now,
 )
-from .storage import JsonConversationStore
+from .storage.postgres import PostgresConversationStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,7 +57,7 @@ LOGGER = logging.getLogger(__name__)
 class ConversationService:
     def __init__(
         self,
-        store: ConversationStore,
+        store: PostgresConversationStore,
         chat_client: ChatClient,
         config: LLMConfig,
         memory_system: MemorySystem | None = None,
@@ -70,7 +68,7 @@ class ConversationService:
         self.chat_client = chat_client
         self.config = config
         self.sessions = SessionManager(store)
-        self.memory_system = memory_system or InMemoryMemorySystem()
+        self.memory_system = memory_system or MemoryRuntime()
         self.memory_debug_service = (
             memory_debug_service
             or self._default_memory_debug_service(self.memory_system)
@@ -81,36 +79,25 @@ class ConversationService:
     def default(
         cls,
         env_file: str | Path = ".env",
-        data_dir: str | Path | None = None,
     ) -> "ConversationService":
         config = LLMConfig.from_env(env_file)
         storage_config = StorageConfig.from_env(env_file)
         runtime_config = ConversationRuntimeConfig.from_env(env_file)
         memory_config = MemoryRuntimeConfig.from_env(env_file)
-        memory_store: MemoryStore | None = None
-        memory_context_retriever: MemoryContextRetriever | None = None
-        memory_write_applier = None
-        persistent_repository = None
-        if storage_config.backend == "postgres":
-            from .storage.postgres import PostgresConversationStore
-            from memory.persistence.postgres import (
-                PostgresPersistentMemoryRepository,
-            )
+        from memory.persistence.postgres import PostgresPersistentMemoryRepository
 
-            store = PostgresConversationStore(storage_config.database_url or "")
-            store.checkpoints.fail_incomplete_turns()
-            persistent_repository = PostgresPersistentMemoryRepository(
-                storage_config.database_url or ""
-            )
-            memory_write_applier = PersistentMemoryWritePlanApplier(
-                persistent_repository
-            )
-            memory_context_retriever = NormalizedMemoryContextRetriever(
+        store = PostgresConversationStore(storage_config.database_url)
+        store.checkpoints.fail_incomplete_turns()
+        persistent_repository = PostgresPersistentMemoryRepository(
+            storage_config.database_url
+        )
+        memory_write_applier = PersistentMemoryWritePlanApplier(persistent_repository)
+        memory_context_retriever: MemoryContextRetriever = (
+            NormalizedMemoryContextRetriever(
                 persistent_repository,
                 search=PostgresNormalizedMemorySearch(persistent_repository),
             )
-        else:
-            store = JsonConversationStore(data_dir or default_data_dir())
+        )
         chat_client = OpenAIChatClient(config)
         debug_recorder = MemoryDebugRecorder(
             enabled=memory_config.debug_enabled,
@@ -130,8 +117,7 @@ class ConversationService:
                 ),
                 debug_recorder=debug_recorder,
             )
-        memory_system = InMemoryMemorySystem(
-            store=memory_store,
+        memory_system = MemoryRuntime(
             context_retriever=memory_context_retriever,
             write_applier=memory_write_applier,
             extractor=extractor,
@@ -139,7 +125,6 @@ class ConversationService:
         )
         memory_debug_service = MemoryDebugService(
             recorder=debug_recorder,
-            memory_store=None if persistent_repository is not None else memory_system.store,
             active_cache=memory_system.active_cache,
             persistent_repository=persistent_repository,
         )
@@ -233,56 +218,15 @@ class ConversationService:
         author_id = user_id or session.user_id
         if author_id != session.user_id:
             raise ValueError("Only the session owner can send messages in this store")
-
-        if self._checkpointing_supported():
-            return self._send_message_postgres_atomic(
-                session=session,
-                content=content,
-                user_id=author_id,
-                metadata=metadata,
-                idempotency_key=idempotency_key,
-            )
-
-        user_message = self.store.append_message(
-            Message.create(
-                session_id=session.id,
-                user_id=author_id,
-                role="user",
-                content=content,
-                metadata=metadata,
-            )
+        return self._send_checkpointed_message(
+            session=session,
+            content=content,
+            user_id=author_id,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
         )
 
-        memory_prepare = self._prepare_memory_turn(session, user_message)
-        self._apply_memory_context_actions(memory_prepare.context_actions)
-
-        llm_messages = self._build_llm_context(
-            session,
-            memory_context=memory_prepare.memory_context,
-        )
-        completion = self.chat_client.complete(
-            llm_messages,
-            model=session.model,
-            temperature=session.temperature,
-        )
-        assistant_message = self.store.append_message(
-            Message.create(
-                session_id=session.id,
-                role="assistant",
-                content=completion.content,
-                model=completion.model or session.model or self.config.model,
-                token_usage=completion.usage,
-                metadata={"provider_message_id": completion.provider_message_id},
-            )
-        )
-        memory_commit = self._commit_memory_turn(
-            memory_prepare.snapshot,
-            assistant_message,
-        )
-        self._apply_memory_context_actions(memory_commit.context_actions)
-        return user_message, assistant_message
-
-    def _send_message_postgres_atomic(
+    def _send_checkpointed_message(
         self,
         session: ChatSession,
         content: str,
@@ -290,12 +234,8 @@ class ConversationService:
         metadata: dict[str, Any] | None,
         idempotency_key: str | None,
     ) -> tuple[Message, Message]:
-        postgres_store = self._postgres_store()
-        if postgres_store is None:
-            raise NotImplementedError("Checkpointed send_message requires PostgreSQL")
-
         if idempotency_key:
-            existing_turn = postgres_store.checkpoints.get_turn_by_idempotency_key(
+            existing_turn = self.store.checkpoints.get_turn_by_idempotency_key(
                 session.id,
                 idempotency_key,
             )
@@ -319,10 +259,10 @@ class ConversationService:
             user_message_id=user_message.id,
             idempotency_key=idempotency_key,
         )
-        postgres_store.checkpoints.begin_turn(turn)
+        self.store.checkpoints.begin_turn(turn)
 
         try:
-            base_checkpoint = postgres_store.checkpoints.latest_checkpoint(session.id)
+            base_checkpoint = self.store.checkpoints.latest_checkpoint(session.id)
             memory_prepare = self._prepare_memory_turn(
                 session,
                 user_message,
@@ -347,7 +287,7 @@ class ConversationService:
                 token_usage=completion.usage,
                 metadata={"provider_message_id": completion.provider_message_id},
             )
-            committed = self._commit_postgres_turn(
+            committed = self._commit_checkpointed_turn(
                 session=session,
                 base_checkpoint=base_checkpoint,
                 turn=turn,
@@ -357,10 +297,10 @@ class ConversationService:
             )
             return committed
         except Exception as error:
-            postgres_store.checkpoints.mark_turn_failed(turn.id, str(error))
+            self.store.checkpoints.mark_turn_failed(turn.id, str(error))
             raise
 
-    def _commit_postgres_turn(
+    def _commit_checkpointed_turn(
         self,
         session: ChatSession,
         base_checkpoint: ConversationCheckpoint | None,
@@ -369,25 +309,21 @@ class ConversationService:
         assistant_message: Message,
         memory_prepare: MemoryTurnPrepareResult,
     ) -> tuple[Message, Message]:
-        postgres_store = self._postgres_store()
-        if postgres_store is None:
-            raise NotImplementedError("PostgreSQL checkpoint store is required")
-
         from memory.persistence.postgres import PostgresPersistentMemoryRepository
         from memory.writing import PersistentMemoryWritePlanApplier
 
         memory_status = "not_run"
         memory_commit: MemoryTurnResult | None = None
         debug_trace_id = memory_prepare.metadata.get("debug_trace_id")
-        with postgres_store.database.connect() as connection:
+        with self.store.database.connect() as connection:
             try:
                 with connection.transaction():
-                    locked_session = postgres_store.checkpoints.lock_session(
+                    locked_session = self.store.checkpoints.lock_session(
                         connection,
                         session.id,
                     )
                     latest_checkpoint = (
-                        postgres_store.checkpoints.latest_checkpoint_in_connection(
+                        self.store.checkpoints.latest_checkpoint_in_connection(
                             connection,
                             session.id,
                         )
@@ -399,12 +335,12 @@ class ConversationService:
                             "Session advanced while the assistant response was running"
                         )
 
-                    user_sequence = postgres_store.checkpoints.next_sequence_in_connection(
+                    user_sequence = self.store.checkpoints.next_sequence_in_connection(
                         connection,
                         session.id,
                     )
                     assistant_sequence = user_sequence + 1
-                    branch = postgres_store.checkpoints.get_branch_in_connection(
+                    branch = self.store.checkpoints.get_branch_in_connection(
                         connection,
                         session.id,
                     )
@@ -437,14 +373,14 @@ class ConversationService:
                         checkpoint.id,
                         assistant_sequence,
                     )
-                    postgres_store.checkpoints.append_message_in_connection(
+                    self.store.checkpoints.append_message_in_connection(
                         connection,
                         user_message,
                         turn_id=turn.id,
                         checkpoint_id=checkpoint.id,
                         sequence=user_sequence,
                     )
-                    postgres_store.checkpoints.append_message_in_connection(
+                    self.store.checkpoints.append_message_in_connection(
                         connection,
                         assistant_message,
                         turn_id=turn.id,
@@ -514,7 +450,7 @@ class ConversationService:
                             },
                         }
                     )
-                    postgres_store.checkpoints.create_checkpoint_in_connection(
+                    self.store.checkpoints.create_checkpoint_in_connection(
                         connection,
                         checkpoint,
                     )
@@ -532,7 +468,7 @@ class ConversationService:
                         checkpoint=checkpoint,
                         memory_status=memory_status,
                     )
-                    postgres_store.checkpoints.complete_turn_in_connection(
+                    self.store.checkpoints.complete_turn_in_connection(
                         connection,
                         turn.id,
                         user_message_id=user_message.id,
@@ -588,11 +524,8 @@ class ConversationService:
         session_id: str,
         limit: int = 50,
     ) -> list[ConversationCheckpoint]:
-        postgres_store = self._postgres_store()
-        if postgres_store is None:
-            raise NotImplementedError("Checkpoint listing requires PostgreSQL")
         self._require_session(session_id, allow_archived=True)
-        return postgres_store.checkpoints.list_visible_checkpoints(
+        return self.store.checkpoints.list_visible_checkpoints(
             session_id,
             limit=limit,
         )
@@ -603,10 +536,7 @@ class ConversationService:
         label: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ConversationCheckpoint:
-        postgres_store = self._postgres_store()
-        if postgres_store is None:
-            raise NotImplementedError("Checkpoint update requires PostgreSQL")
-        return postgres_store.checkpoints.update_checkpoint_label(
+        return self.store.checkpoints.update_checkpoint_label(
             checkpoint_id,
             label=label,
             metadata=metadata,
@@ -618,23 +548,20 @@ class ConversationService:
         checkpoint_id: str,
         title: str | None = None,
     ) -> ChatSession:
-        postgres_store = self._postgres_store()
-        if postgres_store is None:
-            raise NotImplementedError("Branch sessions require PostgreSQL")
         parent_session = self._require_session(session_id, allow_archived=True)
-        checkpoint = postgres_store.checkpoints.get_checkpoint(checkpoint_id)
+        checkpoint = self.store.checkpoints.get_checkpoint(checkpoint_id)
         if checkpoint is None:
             raise ValueError(f"Unknown checkpoint_id: {checkpoint_id}")
         visible_checkpoint_ids = {
             item.id
-            for item in postgres_store.checkpoints.list_visible_checkpoints(
+            for item in self.store.checkpoints.list_visible_checkpoints(
                 session_id,
                 limit=10_000,
             )
         }
         if checkpoint.id not in visible_checkpoint_ids:
             raise ValueError("checkpoint_id is not visible from session_id")
-        parent_branch = postgres_store.checkpoints.get_branch(session_id)
+        parent_branch = self.store.checkpoints.get_branch(session_id)
         root_session_id = (
             parent_branch.root_session_id if parent_branch else parent_session.id
         )
@@ -662,7 +589,7 @@ class ConversationService:
             base_checkpoint_id=checkpoint.id,
             base_sequence=checkpoint.sequence,
         )
-        return postgres_store.checkpoints.create_branch_session(
+        return self.store.checkpoints.create_branch_session(
             branch_session,
             branch,
         )
@@ -727,11 +654,9 @@ class ConversationService:
         )
         if trace is not None:
             return trace
-        postgres_store = self._postgres_store()
-        if postgres_store is not None and hasattr(postgres_store, "debug"):
-            persisted = postgres_store.debug.get_trace(trace_id)
-            if persisted is not None:
-                return persisted.trace
+        persisted = self.store.debug.get_trace(trace_id)
+        if persisted is not None:
+            return persisted.trace
         raise ValueError(f"Unknown memory debug trace: {trace_id}")
 
     def list_session_turn_debug(
@@ -739,13 +664,10 @@ class ConversationService:
         session_id: str,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        postgres_store = self._postgres_store()
-        if postgres_store is None or not hasattr(postgres_store, "debug"):
-            return []
         self._require_session(session_id, allow_archived=True)
         return [
             trace.to_summary_record()
-            for trace in postgres_store.debug.list_visible_turn_debug(
+            for trace in self.store.debug.list_visible_turn_debug(
                 self._visible_session_scopes(session_id),
                 limit=limit,
             )
@@ -756,14 +678,11 @@ class ConversationService:
         checkpoint_id: str,
         limit: int = 100,
     ) -> dict[str, Any]:
-        postgres_store = self._postgres_store()
-        if postgres_store is None or not hasattr(postgres_store, "debug"):
-            raise NotImplementedError("Checkpoint memory requires PostgreSQL")
-        checkpoint = postgres_store.checkpoints.get_checkpoint(checkpoint_id)
+        checkpoint = self.store.checkpoints.get_checkpoint(checkpoint_id)
         if checkpoint is None:
             raise ValueError(f"Unknown checkpoint_id: {checkpoint_id}")
         session = self._require_session(checkpoint.session_id, allow_archived=True)
-        snapshot = postgres_store.debug.checkpoint_memory_snapshot(
+        snapshot = self.store.debug.checkpoint_memory_snapshot(
             user_id=session.user_id,
             scopes=self._checkpoint_visible_session_scopes(checkpoint),
             limit=limit,
@@ -812,23 +731,6 @@ class ConversationService:
                 snapshot=snapshot,
                 metadata=snapshot.metadata,
             )
-
-    def _commit_memory_turn(
-        self,
-        snapshot: MemoryTurnSnapshot,
-        assistant_message: Message,
-    ) -> MemoryTurnResult:
-        try:
-            return self.memory_system.commit_turn(
-                MemoryTurnCommitInput(
-                    snapshot=snapshot,
-                    assistant_message=self._to_memory_input_message(assistant_message),
-                    metadata={"source": "conversation_service"},
-                )
-            )
-        except Exception as error:
-            LOGGER.warning("Memory turn commit failed: %s", error)
-            return MemoryTurnResult(metadata={"error": str(error)})
 
     def _build_memory_turn_input(
         self,
@@ -971,14 +873,6 @@ class ConversationService:
             user_id = user_id or session.user_id
         return user_id
 
-    def _checkpointing_supported(self) -> bool:
-        return self._postgres_store() is not None
-
-    def _postgres_store(self):
-        if hasattr(self.store, "checkpoints") and hasattr(self.store, "database"):
-            return self.store
-        return None
-
     def _restore_active_context_if_needed(
         self,
         session: ChatSession,
@@ -987,10 +881,7 @@ class ConversationService:
         if current is not None and _active_context_has_records(current):
             return None
 
-        postgres_store = self._postgres_store()
-        if postgres_store is None:
-            return None
-        checkpoints = postgres_store.checkpoints.list_visible_checkpoints(
+        checkpoints = self.store.checkpoints.list_visible_checkpoints(
             session.id,
             limit=1,
         )
@@ -1038,10 +929,7 @@ class ConversationService:
         return context if isinstance(context, ActiveMemoryContext) else None
 
     def _visible_session_scopes(self, session_id: str) -> list[dict[str, Any]]:
-        postgres_store = self._postgres_store()
-        if postgres_store is None:
-            return [{"session_id": session_id, "max_checkpoint_sequence": None}]
-        return postgres_store.checkpoints.branch_memory_scope(session_id)
+        return self.store.checkpoints.branch_memory_scope(session_id)
 
     def _checkpoint_visible_session_scopes(
         self,
@@ -1081,16 +969,13 @@ class ConversationService:
     ) -> None:
         if not trace_id:
             return
-        postgres_store = self._postgres_store()
-        if postgres_store is None or not hasattr(postgres_store, "debug"):
-            return
         recorder = getattr(self.memory_debug_service, "recorder", None)
         trace = recorder.get(trace_id) if recorder is not None else None
         if trace is None:
             return
         payload = _sanitized_memory_debug_trace(trace.to_record(include_raw=False))
         summary = _memory_debug_summary(payload, memory_status=memory_status)
-        postgres_store.debug.save_trace_in_connection(
+        self.store.debug.save_trace_in_connection(
             connection,
             ConversationMemoryDebugTrace(
                 trace_id=trace_id,
@@ -1166,7 +1051,6 @@ class ConversationService:
             recorder = MemoryDebugRecorder(enabled=False)
         return MemoryDebugService(
             recorder=recorder,
-            memory_store=getattr(memory_system, "store", None),
             active_cache=getattr(memory_system, "active_cache", None),
         )
 

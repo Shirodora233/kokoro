@@ -13,7 +13,7 @@ from llm.openai_client import OpenAIChatClient
 from memory.config import MemoryRuntimeConfig
 from memory.extraction import LLMMemoryExtractor, MemoryExtractionPromptBuilder
 from memory.models import MemoryInputMessage, MemoryTurnCommitInput
-from memory.system import InMemoryMemorySystem
+from memory.system import MemoryRuntime
 
 from .cases import MemorySystemTestScenario, build_scenarios
 from .checks import ScenarioResult, TurnRun, evaluate_scenario
@@ -83,7 +83,7 @@ def _run_scenario(
     llm_config: LLMConfig,
     memory_config: MemoryRuntimeConfig,
 ) -> ScenarioResult:
-    system = InMemoryMemorySystem(
+    system = MemoryRuntime(
         extractor=LLMMemoryExtractor(
             chat_client=chat_client,
             model=memory_config.extraction_model or llm_config.model,

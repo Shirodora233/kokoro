@@ -44,7 +44,6 @@ from .models import (
     MemoryTurnResult,
     MemoryTurnSnapshot,
 )
-from .noop import NoopMemorySystem
 from .persistence import (
     Confidence,
     Importance,
@@ -70,7 +69,6 @@ from .retrieval import (
     CandidateMemoryMatcher,
     CandidateRelatedGroup,
     CandidateRetrievalResult,
-    FallbackNormalizedMemorySearch,
     NormalizedMemorySearch,
     NormalizedMemoryRanker,
     NormalizedEntityMemoryView,
@@ -78,7 +76,6 @@ from .retrieval import (
     NormalizedMemoryContextRetriever,
     PostgresNormalizedMemorySearch,
     RelatedMemory,
-    SimpleMemoryContextRetriever,
 )
 from .reconciliation import (
     DeterministicMemoryReconciler,
@@ -90,7 +87,7 @@ from .reconciliation import (
     ReconciliationEvidence,
     WriteAction,
 )
-from .system import InMemoryMemorySystem
+from .system import MemoryRuntime
 from .writing import (
     InMemoryMemoryWritePlanApplier,
     MemoryWriteFailure,
@@ -146,7 +143,6 @@ __all__ = [
     "MemoryWriteRequest",
     "MemoryWriteResult",
     "ObjectType",
-    "InMemoryMemorySystem",
     "InMemoryMemoryWritePlanApplier",
     "LLMMemoryExtractionClient",
     "LLMMemoryExtractionCallResult",
@@ -154,13 +150,12 @@ __all__ = [
     "MemoryDebugRecorder",
     "MemoryDebugService",
     "MemoryDebugTrace",
-    "NoopMemorySystem",
+    "MemoryRuntime",
     "NormalizedEntityMemoryView",
     "NormalizedEventMemoryView",
     "NormalizedMemoryContextRetriever",
     "NormalizedMemoryRanker",
     "NormalizedMemorySearch",
-    "FallbackNormalizedMemorySearch",
     "PersistentDescription",
     "PersistentEntity",
     "PersistentEvent",
@@ -179,7 +174,6 @@ __all__ = [
     "RelatedMemory",
     "RetrievalDebugInfo",
     "PostgresNormalizedMemorySearch",
-    "SimpleMemoryContextRetriever",
     "TimeCertainty",
     "TimeKind",
     "TimelineKind",

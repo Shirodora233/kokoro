@@ -11,7 +11,7 @@ from conversation.storage.postgres import PostgresConversationStore
 from llm.config import LLMConfig
 from llm.interfaces import ChatCompletionResult, ChatMessageParam
 from memory import (
-    InMemoryMemorySystem,
+    MemoryRuntime,
     MemoryDebugRecorder,
     MemorySearchRequest,
     NormalizedMemoryContextRetriever,
@@ -340,7 +340,7 @@ def _service(
     store.checkpoints.fail_incomplete_turns()
     persistent = PostgresPersistentMemoryRepository(database_url)
     debug_recorder = MemoryDebugRecorder()
-    memory_system = InMemoryMemorySystem(
+    memory_system = MemoryRuntime(
         extractor=extractor or SequenceMemoryExtractor(memory_batches),
         context_retriever=NormalizedMemoryContextRetriever(
             persistent,

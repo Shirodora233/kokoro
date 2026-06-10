@@ -1,15 +1,12 @@
-"""ConversationStore facade backed by PostgreSQL repositories."""
+"""Conversation storage facade backed by PostgreSQL repositories."""
 
 from __future__ import annotations
-
-from typing import Iterable
 
 from conversation.models import ChatSession, Message, User
 
 from .checkpoint_repository import PostgresCheckpointRepository
 from .connection import PostgresDatabase
 from .debug_repository import PostgresConversationDebugRepository
-from .import_repository import PostgresImportRepository
 from .maintenance_repository import PostgresMaintenanceRepository
 from .message_repository import PostgresMessageRepository
 from .session_repository import PostgresSessionRepository
@@ -17,7 +14,7 @@ from .user_repository import PostgresUserRepository
 
 
 class PostgresConversationStore:
-    """Repository implementation that satisfies ConversationStore."""
+    """PostgreSQL conversation repository facade."""
 
     def __init__(self, database_url: str) -> None:
         self.database = PostgresDatabase(database_url)
@@ -27,7 +24,6 @@ class PostgresConversationStore:
         self.messages = PostgresMessageRepository(self.database)
         self.checkpoints = PostgresCheckpointRepository(self.database)
         self.debug = PostgresConversationDebugRepository(self.database)
-        self.importer = PostgresImportRepository(self.database)
         self.maintenance = PostgresMaintenanceRepository(self.database)
 
     def ensure_schema(self) -> None:
@@ -71,17 +67,3 @@ class PostgresConversationStore:
 
     def delete_all(self) -> dict[str, int]:
         return self.maintenance.delete_all()
-
-    def import_records(
-        self,
-        users: Iterable[User],
-        sessions: Iterable[ChatSession],
-        messages: Iterable[Message],
-        replace: bool = False,
-    ) -> dict[str, int]:
-        return self.importer.import_records(
-            users=users,
-            sessions=sessions,
-            messages=messages,
-            replace=replace,
-        )

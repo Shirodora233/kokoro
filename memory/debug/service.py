@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..interfaces import MemoryStore
 from ..persistence import PersistentMemoryRepository, PersistentObjectRef
 from .recorder import MemoryDebugRecorder
 
@@ -15,12 +14,10 @@ class MemoryDebugService:
     def __init__(
         self,
         recorder: MemoryDebugRecorder,
-        memory_store: MemoryStore | None = None,
         active_cache: Any | None = None,
         persistent_repository: PersistentMemoryRepository | None = None,
     ) -> None:
         self.recorder = recorder
-        self.memory_store = memory_store
         self.active_cache = active_cache
         self.persistent_repository = persistent_repository
 
@@ -31,11 +28,6 @@ class MemoryDebugService:
         limit: int = 100,
     ) -> dict[str, Any]:
         selected_limit = max(0, limit)
-        generic_records = self._generic_records(
-            user_id=user_id,
-            session_id=session_id,
-            limit=selected_limit,
-        )
         active_context = (
             self.active_cache.get(user_id=user_id, session_id=session_id)
             if self.active_cache is not None
@@ -52,7 +44,6 @@ class MemoryDebugService:
                 "session_id": session_id,
                 "limit": selected_limit,
             },
-            "generic_memories": [record.to_record() for record in generic_records],
             "active_memory_context": (
                 active_context.to_record() if active_context is not None else None
             ),
@@ -85,20 +76,6 @@ class MemoryDebugService:
     ) -> dict[str, Any] | None:
         trace = self.recorder.get(trace_id)
         return trace.to_record(include_raw=include_raw) if trace else None
-
-    def _generic_records(
-        self,
-        user_id: str | None,
-        session_id: str | None,
-        limit: int,
-    ):
-        if self.memory_store is None:
-            return []
-        return self.memory_store.list_records(
-            user_id=user_id,
-            session_id=session_id,
-            limit=limit,
-        )
 
     def _normalized_snapshot(
         self,

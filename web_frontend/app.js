@@ -4,10 +4,8 @@ const state = {
   messages: [],
   checkpoints: [],
   checkpointsByAssistantMessageId: new Map(),
-  checkpointsUnavailable: false,
   turnDebug: [],
   turnDebugByUserMessageId: new Map(),
-  turnDebugUnavailable: false,
   traceDetailsById: new Map(),
   checkpointMemoryById: new Map(),
   selectedUsername: localStorage.getItem("kokoro.selectedUsername") || "",
@@ -597,7 +595,6 @@ function renderCheckpointMemory(memory) {
   const normalized = memory.normalized_memories || {};
   const grouped = groupNormalizedMemory(normalized);
   const activeRecords = activeContextRecords(memory.active_memory_snapshot);
-  const genericRecords = memory.generic_memories || [];
 
   const sections = [
     hierarchicalMemorySection(
@@ -628,14 +625,6 @@ function renderCheckpointMemory(memory) {
       (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
     ));
   }
-  if (genericRecords.length && grouped.entities.length + grouped.events.length === 0) {
-    sections.push(memorySection(
-      "Generic memories",
-      genericRecords,
-      (record) => `${record.memory_type || "memory"} · ${record.text || ""}`,
-    ));
-  }
-
   els.checkpointMemoryContent.append(...sections);
 }
 
@@ -789,8 +778,6 @@ function resetTurnDebug() {
 function resetSessionDebugState() {
   resetCheckpoints();
   resetTurnDebug();
-  state.checkpointsUnavailable = false;
-  state.turnDebugUnavailable = false;
   state.traceDetailsById = new Map();
   state.checkpointMemoryById = new Map();
 }
@@ -885,25 +872,15 @@ async function loadCheckpoints(sessionId = state.selectedSessionId) {
     resetCheckpoints();
     return;
   }
-  try {
-    const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/checkpoints?limit=50`);
-    if (sessionId !== state.selectedSessionId) {
-      return;
-    }
-    state.checkpointsUnavailable = false;
-    state.checkpoints = (data.checkpoints || []).map((checkpoint, index) => ({
-      ...checkpoint,
-      ui_number: index + 1,
-    }));
-    indexCheckpoints();
-  } catch (error) {
-    if (error.status === 501) {
-      state.checkpointsUnavailable = true;
-      resetCheckpoints();
-      return;
-    }
-    throw error;
+  const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/checkpoints?limit=50`);
+  if (sessionId !== state.selectedSessionId) {
+    return;
   }
+  state.checkpoints = (data.checkpoints || []).map((checkpoint, index) => ({
+    ...checkpoint,
+    ui_number: index + 1,
+  }));
+  indexCheckpoints();
 }
 
 async function loadTurnDebug(sessionId = state.selectedSessionId) {
@@ -911,29 +888,19 @@ async function loadTurnDebug(sessionId = state.selectedSessionId) {
     resetTurnDebug();
     return;
   }
-  try {
-    const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/turn-debug?limit=100`);
-    if (sessionId !== state.selectedSessionId) {
-      return;
-    }
-    state.turnDebugUnavailable = false;
-    state.turnDebug = data.turn_debug || [];
-    indexTurnDebug();
-  } catch (error) {
-    if (error.status === 501) {
-      state.turnDebugUnavailable = true;
-      resetTurnDebug();
-      return;
-    }
-    throw error;
+  const data = await api(`/api/sessions/${encodeURIComponent(sessionId)}/turn-debug?limit=100`);
+  if (sessionId !== state.selectedSessionId) {
+    return;
   }
+  state.turnDebug = data.turn_debug || [];
+  indexTurnDebug();
 }
 
 async function refreshAll() {
   try {
     await loadUsers();
     await loadSessions();
-    els.storeStatus.textContent = "JSON store";
+    els.storeStatus.textContent = "PostgreSQL";
   } catch (error) {
     showToast(error.message, "error");
     els.storeStatus.textContent = "Disconnected";

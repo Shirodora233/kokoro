@@ -380,7 +380,25 @@ def test_unrelated_candidate_returns_empty() -> None:
 
 
 def test_normalized_retrieval_renders_event_view_without_raw_links() -> None:
-    result = NormalizedMemoryContextRetriever(_NormalizedFixtureRepository()).retrieve(
+    result = NormalizedMemoryContextRetriever(
+        _NormalizedFixtureRepository(),
+        search=_StaticNormalizedSearch(
+            [
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("event", "evt_visit"),
+                    score=0.9,
+                    reason="event_text_match",
+                    matched_text="林医生复诊安排",
+                )
+            ],
+            metadata={
+                "search": "static",
+                "hit_count": 1,
+                "ranked_hit_count": 1,
+                "raw_hit_counts": {"event": 1},
+            },
+        ),
+    ).retrieve(
         MemoryRetrievalRequest(
             user_id=USER_ID,
             session_id=SESSION_ID,
@@ -406,7 +424,19 @@ def test_normalized_retrieval_renders_event_view_without_raw_links() -> None:
 
 
 def test_normalized_retrieval_query_matches_entity_property() -> None:
-    result = NormalizedMemoryContextRetriever(_NormalizedFixtureRepository()).retrieve(
+    result = NormalizedMemoryContextRetriever(
+        _NormalizedFixtureRepository(),
+        search=_StaticNormalizedSearch(
+            [
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("property", "prop_doctor_role"),
+                    score=0.9,
+                    reason="property_text_match",
+                    matched_text="复诊的医生",
+                )
+            ],
+        ),
+    ).retrieve(
         MemoryRetrievalRequest(
             user_id=USER_ID,
             session_id=SESSION_ID,
@@ -873,20 +903,25 @@ class _NoRecentNormalizedFixtureRepository(_NormalizedFixtureRepository):
 
 
 class _StaticNormalizedSearch:
-    def __init__(self, hits: list[MemorySearchHit]) -> None:
+    def __init__(
+        self,
+        hits: list[MemorySearchHit],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         self.hits = hits
+        self.metadata = metadata
 
     def search(
         self,
         request: MemorySearchRequest,
     ) -> MemorySearchResult:
-        return MemorySearchResult(
-            hits=self.hits[: request.limit],
-            metadata={
-                "search": "static",
-                "hit_count": min(len(self.hits), request.limit),
-            },
-        )
+        limit = request.limit if request.limit is not None else len(self.hits)
+        hits = self.hits[:limit]
+        metadata = self.metadata or {
+            "search": "static",
+            "hit_count": min(len(self.hits), limit),
+        }
+        return MemorySearchResult(hits=hits, metadata=metadata)
 
 
 def _first(items):
