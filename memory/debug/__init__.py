@@ -5,6 +5,7 @@ from .models import (
     ExtractionDebugInfo,
     MemoryDebugTrace,
     RetrievalDebugInfo,
+    WriteDebugInfo,
     new_debug_trace_id,
     trace_id_from_metadata,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "MemoryDebugService",
     "MemoryDebugTrace",
     "RetrievalDebugInfo",
+    "WriteDebugInfo",
     "new_debug_trace_id",
     "trace_id_from_metadata",
     "with_debug_trace_metadata",

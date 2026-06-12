@@ -23,6 +23,10 @@ MEMORY_EXTRACTION_ENABLED="true"
 MEMORY_EXTRACTION_MODEL=""
 MEMORY_EXTRACTION_TEMPERATURE="0.0"
 MEMORY_EXTRACTION_MAX_CONTEXT_MESSAGES="20"
+MEMORY_RECONCILIATION_MODE="llm"
+MEMORY_RECONCILIATION_MODEL=""
+MEMORY_RECONCILIATION_TEMPERATURE="0.0"
+MEMORY_RECONCILIATION_MAX_REPAIR_ATTEMPTS="1"
 ```
 
 也支持 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL` 作为兼容字段。
@@ -224,6 +228,8 @@ LLM provider 抽象位于 `llm/`，包括 `ChatClient`、`ChatMessageParam`、`L
   raw `link` / `time_link` 只用于组装关系，不直接塞进 prompt。
 - reconciliation matching 复用本轮 `MemoryTurnSnapshot` 里的同一份 search result，给 reconciler
   生成 direct/expanded candidate groups，不再额外做第二次 retrieval。
+- conversation 默认使用 LLM reconciliation；如需回退到旧的确定性 baseline，可设置
+  `MEMORY_RECONCILIATION_MODE="deterministic"`。
 - 可通过传入 `NoopMemorySystem` 临时关闭记忆链路。
 
 抽取实现拆在 `memory/extraction/`：`pipeline.py` 负责流程编排，`llm.py` 只负责调用模型，`prompt.py`、`parser.py`、`normalizer.py` 分别负责提示词、JSON 解析和候选规范化。

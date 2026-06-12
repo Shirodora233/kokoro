@@ -15,6 +15,7 @@ from memory import (
     ContextAction,
     ConversationContextState,
     LLMMemoryExtractor,
+    LLMMemoryReconciler,
     MemoryContextBlock,
     MemoryDebugRecorder,
     MemoryDebugService,
@@ -117,10 +118,30 @@ class ConversationService:
                 ),
                 debug_recorder=debug_recorder,
             )
+        reconciler = None
+        if memory_config.reconciliation_mode == "llm":
+            reconciler = LLMMemoryReconciler(
+                chat_client=chat_client,
+                model=memory_config.reconciliation_model or config.model,
+                temperature=memory_config.reconciliation_temperature,
+                max_repair_attempts=(
+                    memory_config.reconciliation_max_repair_attempts
+                ),
+            )
+        elif memory_config.reconciliation_mode not in {
+            "deterministic",
+            "legacy",
+            "legacy_deterministic",
+        }:
+            raise ValueError(
+                "Unsupported MEMORY_RECONCILIATION_MODE: "
+                f"{memory_config.reconciliation_mode}"
+            )
         memory_system = MemoryRuntime(
             context_retriever=memory_context_retriever,
             write_applier=memory_write_applier,
             extractor=extractor,
+            reconciler=reconciler,
             debug_recorder=debug_recorder,
         )
         memory_debug_service = MemoryDebugService(
@@ -1181,8 +1202,12 @@ def _memory_debug_summary(
 ) -> dict[str, Any]:
     extraction = _dict(payload.get("extraction"))
     retrieval = _dict(payload.get("retrieval"))
+    write = _dict(payload.get("write"))
     search_result = _dict(retrieval.get("search_result"))
     active_context = _dict(retrieval.get("active_memory_context"))
+    write_plan = _dict(write.get("write_plan"))
+    write_plan_metadata = _dict(write_plan.get("metadata"))
+    write_operations = _list(write_plan.get("operations"))
     normalized_records = _list(extraction.get("normalized_records"))
     hits = _list(search_result.get("hits"))
     memory_context = _list(retrieval.get("memory_context"))
@@ -1199,6 +1224,9 @@ def _memory_debug_summary(
         "validation_error_count": len(_list(extraction.get("validation_errors"))),
         "search_hit_count": len(hits),
         "memory_context_count": len(memory_context),
+        "reconciler": write_plan_metadata.get("reconciler"),
+        "write_operation_count": len(write_operations),
+        "write_action_counts": _write_action_counts(write_operations),
         "active_counts": {
             "events": len(_list(active_context.get("event_memories"))),
             "entities": len(_list(active_context.get("entity_memories"))),
@@ -1215,6 +1243,17 @@ def _dict(value: Any) -> dict[str, Any]:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _write_action_counts(operations: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        action = operation.get("action")
+        if isinstance(action, str) and action:
+            counts[action] = counts.get(action, 0) + 1
+    return counts
 
 
 class _ConnectionPersistentMemoryRepository:

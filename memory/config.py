@@ -43,6 +43,10 @@ class MemoryRuntimeConfig:
     extraction_model: str | None = None
     extraction_temperature: float = 0.0
     extraction_max_context_messages: int = 20
+    reconciliation_mode: str = "llm"
+    reconciliation_model: str | None = None
+    reconciliation_temperature: float = 0.0
+    reconciliation_max_repair_attempts: int = 1
     debug_enabled: bool = True
     debug_max_traces: int = 50
     debug_max_raw_chars: int = 200_000
@@ -60,6 +64,16 @@ class MemoryRuntimeConfig:
         max_context_messages = int(
             read("MEMORY_EXTRACTION_MAX_CONTEXT_MESSAGES", "20") or "20"
         )
+        reconciliation_mode = (
+            read("MEMORY_RECONCILIATION_MODE", "llm") or "llm"
+        ).strip().lower()
+        reconciliation_model = read("MEMORY_RECONCILIATION_MODEL")
+        reconciliation_temperature = float(
+            read("MEMORY_RECONCILIATION_TEMPERATURE", "0.0") or "0.0"
+        )
+        reconciliation_max_repair_attempts = int(
+            read("MEMORY_RECONCILIATION_MAX_REPAIR_ATTEMPTS", "1") or "1"
+        )
         debug_enabled = _parse_bool(read("MEMORY_DEBUG_ENABLED"), default=True)
         debug_max_traces = int(read("MEMORY_DEBUG_MAX_TRACES", "50") or "50")
         debug_max_raw_chars = int(
@@ -70,6 +84,10 @@ class MemoryRuntimeConfig:
             extraction_model=model,
             extraction_temperature=temperature,
             extraction_max_context_messages=max_context_messages,
+            reconciliation_mode=reconciliation_mode,
+            reconciliation_model=reconciliation_model,
+            reconciliation_temperature=reconciliation_temperature,
+            reconciliation_max_repair_attempts=reconciliation_max_repair_attempts,
             debug_enabled=debug_enabled,
             debug_max_traces=debug_max_traces,
             debug_max_raw_chars=debug_max_raw_chars,

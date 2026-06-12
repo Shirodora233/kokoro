@@ -23,6 +23,7 @@ from .models import (
     ExtractionDebugInfo,
     MemoryDebugTrace,
     RetrievalDebugInfo,
+    WriteDebugInfo,
     new_debug_trace_id,
     trace_id_from_metadata,
 )
@@ -152,6 +153,28 @@ class MemoryDebugRecorder:
         self._update_trace(
             trace_id,
             lambda trace: replace(trace, retrieval=info, status="prepared"),
+        )
+
+    def record_write(
+        self,
+        trace_id: str | None,
+        *,
+        candidate_matching,
+        write_plan,
+        write_result,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if not self.enabled or not trace_id:
+            return
+        info = WriteDebugInfo(
+            candidate_matching=candidate_matching,
+            write_plan=write_plan,
+            write_result=write_result,
+            metadata=dict(metadata or {}),
+        )
+        self._update_trace(
+            trace_id,
+            lambda trace: replace(trace, write=info, status="committed"),
         )
 
     def mark_failed(

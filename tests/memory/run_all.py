@@ -26,6 +26,7 @@ REAL_LLM_SUITES = [
 
 REAL_POSTGRES_LLM_SUITES = [
     "tests.memory.postgres_real.runner",
+    "tests.conversation.llm_reconciliation_real_runner",
 ]
 
 

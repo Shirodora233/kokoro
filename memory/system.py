@@ -192,6 +192,8 @@ class MemoryRuntime(MemorySystem):
         snapshot = commit.snapshot
         turn = snapshot.turn
         scoped_records = snapshot.candidates
+        trace_id = snapshot.metadata.get("debug_trace_id")
+        trace_id = trace_id if isinstance(trace_id, str) else None
         selected_write_applier = write_applier or self.write_applier
         active_context = snapshot.active_memory_context or self.active_cache.get(
             user_id=turn.user_id,
@@ -236,6 +238,12 @@ class MemoryRuntime(MemorySystem):
                     **dict(commit.metadata),
                 },
             )
+        )
+        self._record_write_debug(
+            trace_id=trace_id,
+            candidate_retrieval=candidate_retrieval,
+            write_plan=write_plan,
+            write_result=write_result,
         )
         created_records = [
             *write_result.created_records,
@@ -390,5 +398,25 @@ class MemoryRuntime(MemorySystem):
                 "context_retriever": self.context_retriever.__class__.__name__,
                 "search_hit_count": len(search_result.hits),
                 "memory_context_count": len(retrieval_result.memory_context),
+            },
+        )
+
+    def _record_write_debug(
+        self,
+        trace_id: str | None,
+        candidate_retrieval,
+        write_plan,
+        write_result,
+    ) -> None:
+        if self.debug_recorder is None:
+            return
+        self.debug_recorder.record_write(
+            trace_id,
+            candidate_matching=candidate_retrieval,
+            write_plan=write_plan,
+            write_result=write_result,
+            metadata={
+                "reconciler": write_plan.metadata.get("reconciler"),
+                "write_operation_count": len(write_plan.operations),
             },
         )

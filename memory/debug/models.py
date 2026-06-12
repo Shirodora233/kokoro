@@ -127,6 +127,24 @@ class RetrievalDebugInfo:
 
 
 @dataclass(frozen=True)
+class WriteDebugInfo:
+    """Debug details for memory reconciliation and write application."""
+
+    candidate_matching: Any | None = None
+    write_plan: Any | None = None
+    write_result: Any | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "candidate_matching": _to_record(self.candidate_matching),
+            "write_plan": _sanitize_write_plan(_to_record(self.write_plan)),
+            "write_result": _to_record(self.write_result),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
 class MemoryDebugTrace:
     """One user-message memory debug trace."""
 
@@ -139,6 +157,7 @@ class MemoryDebugTrace:
     new_message: MemoryInputMessage | None = None
     extraction: ExtractionDebugInfo | None = None
     retrieval: RetrievalDebugInfo | None = None
+    write: WriteDebugInfo | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self, include_raw: bool = False) -> dict[str, Any]:
@@ -164,6 +183,11 @@ class MemoryDebugTrace:
                 if self.retrieval is not None
                 else None
             ),
+            "write": (
+                self.write.to_record()
+                if self.write is not None
+                else None
+            ),
             "metadata": dict(self.metadata),
         }
 
@@ -187,6 +211,11 @@ class MemoryDebugTrace:
             "memory_context_count": (
                 len(retrieval.memory_context) if retrieval else 0
             ),
+            "write_operation_count": (
+                len(self.write.to_record().get("write_plan", {}).get("operations", []))
+                if self.write
+                else 0
+            ),
             "metadata": dict(self.metadata),
         }
 
@@ -207,3 +236,32 @@ def _count_delta(
         key: max(0, before.get(key, 0) - after.get(key, 0))
         for key in sorted(keys)
     }
+
+
+def _to_record(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "to_record"):
+        return value.to_record()
+    return value
+
+
+def _sanitize_write_plan(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    plan = dict(value)
+    metadata = dict(plan.get("metadata") or {})
+    raw_output = metadata.pop("raw_output", None)
+    prompt_messages = metadata.pop("prompt_messages", None)
+    llm_raw_outputs = metadata.pop("llm_raw_outputs", None)
+    raw: dict[str, Any] = {}
+    if raw_output is not None:
+        raw["raw_output_length"] = len(str(raw_output))
+    if isinstance(prompt_messages, list):
+        raw["prompt_message_count"] = len(prompt_messages)
+    if isinstance(llm_raw_outputs, list):
+        raw["fallback_raw_output_count"] = len(llm_raw_outputs)
+    if raw:
+        metadata["raw"] = {"available": True, **raw}
+    plan["metadata"] = metadata
+    return plan
