@@ -195,6 +195,15 @@ class MemoryDebugTrace:
         extraction = self.extraction
         retrieval = self.retrieval
         search_result = retrieval.search_result if retrieval else None
+        write_record = self.write.to_record() if self.write else {}
+        write_plan = (
+            write_record.get("write_plan") if isinstance(write_record, dict) else {}
+        )
+        write_plan = write_plan if isinstance(write_plan, dict) else {}
+        write_metadata = write_plan.get("metadata")
+        write_metadata = write_metadata if isinstance(write_metadata, dict) else {}
+        write_operations = write_plan.get("operations")
+        write_operations = write_operations if isinstance(write_operations, list) else []
         return {
             "trace_id": self.trace_id,
             "user_id": self.user_id,
@@ -211,11 +220,9 @@ class MemoryDebugTrace:
             "memory_context_count": (
                 len(retrieval.memory_context) if retrieval else 0
             ),
-            "write_operation_count": (
-                len(self.write.to_record().get("write_plan", {}).get("operations", []))
-                if self.write
-                else 0
-            ),
+            "reconciler": write_metadata.get("reconciler"),
+            "write_operation_count": len(write_operations),
+            "write_action_counts": _write_action_counts(write_operations),
             "metadata": dict(self.metadata),
         }
 
@@ -265,3 +272,14 @@ def _sanitize_write_plan(value: Any) -> Any:
         metadata["raw"] = {"available": True, **raw}
     plan["metadata"] = metadata
     return plan
+
+
+def _write_action_counts(operations: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        action = operation.get("action")
+        if isinstance(action, str) and action:
+            counts[action] = counts.get(action, 0) + 1
+    return counts

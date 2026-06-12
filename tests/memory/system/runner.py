@@ -49,6 +49,7 @@ def main() -> int:
         test_llm_extraction_debug_records_parse_error,
         test_llm_extraction_debug_records_validation_errors,
         test_prepare_turn_debug_records_simple_retrieval,
+        test_commit_turn_debug_records_reconciliation_and_write,
     ]
     for test in tests:
         test()
@@ -336,6 +337,40 @@ def test_prepare_turn_debug_records_simple_retrieval() -> None:
     assert first_hit["reason"] == "store_text_match"
     assert retrieval["retrieval_result"]["metadata"]["context_block_count"] == 1
     assert retrieval["memory_context"]
+
+
+def test_commit_turn_debug_records_reconciliation_and_write() -> None:
+    recorder = MemoryDebugRecorder()
+    system = MemoryRuntime(
+        extractor=SequenceMemoryExtractor(
+            [[candidate("entity", "茉莉花茶", "cand_tea")]]
+        ),
+        debug_recorder=recorder,
+    )
+
+    prepare = system.prepare_turn(make_turn("msg_write_debug", "我喜欢茉莉花茶。"))
+    system.commit_turn(
+        MemoryTurnCommitInput(
+            snapshot=prepare.snapshot,
+            assistant_message=_assistant_message("msg_write_debug_assistant"),
+        )
+    )
+
+    trace = recorder.get(prepare.metadata["debug_trace_id"])
+    assert trace is not None
+    payload = trace.to_record()
+    summary = trace.to_summary_record()
+    write = payload["write"]
+
+    assert payload["status"] == "committed"
+    assert write["metadata"]["reconciler"] == "deterministic"
+    assert write["metadata"]["write_operation_count"] == 1
+    assert write["write_plan"]["metadata"]["reconciler"] == "deterministic"
+    assert write["write_plan"]["operations"][0]["action"] == "create"
+    assert write["write_result"]["metadata"]["created_count"] == 1
+    assert summary["reconciler"] == "deterministic"
+    assert summary["write_operation_count"] == 1
+    assert summary["write_action_counts"] == {"create": 1}
 
 
 class _StaticContextRetriever:

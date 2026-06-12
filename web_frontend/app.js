@@ -306,9 +306,12 @@ function processSummaryText(debug) {
   const active = debug.active_counts || {};
   const activeTotal = ["events", "entities", "properties", "other"]
     .reduce((sum, key) => sum + Number(active[key] || 0), 0);
+  const writeCount = Number(debug.write_operation_count || 0);
   return [
     `Extractor ${debug.candidate_count || 0}`,
     `Retrieval ${debug.search_hit_count || 0}`,
+    debug.reconciler ? `Reconciler ${debug.reconciler}` : "",
+    writeCount ? `Write ${writeCount}${actionCountsSummary(debug.write_action_counts)}` : "",
     `Active ${activeTotal}`,
     `Context ${debug.memory_context_count || 0}`,
     debug.memory_status === "failed" ? "Memory failed" : "",
@@ -338,7 +341,11 @@ function renderTraceDetails(container, trace) {
   container.innerHTML = "";
   const extraction = trace?.extraction || {};
   const retrieval = trace?.retrieval || {};
+  const write = trace?.write || {};
   const searchResult = retrieval.search_result || {};
+  const candidateMatching = write.candidate_matching || {};
+  const writePlan = write.write_plan || {};
+  const writeResult = write.write_result || {};
 
   container.append(
     debugSection(
@@ -360,6 +367,21 @@ function renderTraceDetails(container, trace) {
       "Memory context sent to LLM",
       retrieval.memory_context || [],
       (block) => `${block.kind || "memory"} · ${block.content || ""}`,
+    ),
+    debugSection(
+      "Reconciliation groups",
+      candidateMatching.groups || [],
+      candidateGroupText,
+    ),
+    debugSection(
+      "Write operations",
+      writePlan.operations || [],
+      writeOperationText,
+    ),
+    debugSection(
+      "Write result",
+      writeResultRows(writeResult),
+      (row) => row,
     ),
   );
 }
@@ -398,6 +420,80 @@ function activeContextRecords(activeContext) {
 
 function scoreText(score) {
   return typeof score === "number" ? score.toFixed(2) : "0.00";
+}
+
+function actionCountsSummary(counts) {
+  const parts = Object.entries(counts || {})
+    .filter(([, count]) => Number(count) > 0)
+    .map(([action, count]) => `${action}:${count}`);
+  return parts.length ? ` (${parts.join(", ")})` : "";
+}
+
+function candidateGroupText(group) {
+  const direct = group.direct_matches || [];
+  const expanded = group.expanded_context || [];
+  const pieces = [
+    group.candidate_id || "candidate",
+    group.candidate_type || "",
+    group.candidate_text || "",
+    `direct ${direct.length}`,
+    expanded.length ? `expanded ${expanded.length}` : "",
+  ];
+  return pieces.filter(Boolean).join(" · ");
+}
+
+function writeOperationText(operation) {
+  const pieces = [
+    operation.action || "write",
+    operation.candidate_id || operation.candidate_type || "",
+    operation.candidate_text || "",
+    operation.existing_record_id ? `existing ${operation.existing_record_id}` : "",
+    operation.target_record_id ? `target ${operation.target_record_id}` : "",
+    operation.target_candidate_id ? `target candidate ${operation.target_candidate_id}` : "",
+    operation.relation_type ? `relation ${operation.relation_type}` : "",
+    operation.reason || "",
+  ];
+  return pieces.filter(Boolean).join(" · ");
+}
+
+function writeResultRows(result) {
+  if (!result || typeof result !== "object") {
+    return [];
+  }
+  const buckets = [
+    ["created_records", "Created"],
+    ["reused_records", "Reused"],
+    ["attached_records", "Attached"],
+    ["updated_records", "Updated"],
+    ["merged_records", "Merged"],
+    ["invalidated_records", "Invalidated"],
+    ["ignored_operations", "Ignored"],
+    ["conflict_operations", "Conflicts"],
+    ["failed_operations", "Failures"],
+  ];
+  const rows = [];
+  buckets.forEach(([key, label]) => {
+    const items = Array.isArray(result[key]) ? result[key] : [];
+    if (items.length === 0) {
+      return;
+    }
+    rows.push(`${label} ${items.length}`);
+    items.slice(0, 6).forEach((item) => {
+      rows.push(`- ${recordOrOperationText(item)}`);
+    });
+    if (items.length > 6) {
+      rows.push(`- ${items.length - 6} more`);
+    }
+  });
+  return rows;
+}
+
+function recordOrOperationText(item) {
+  const operation = item.operation || item;
+  const memoryType = item.memory_type || operation.candidate_type || "";
+  const text = item.text || operation.candidate_text || operation.reason || "";
+  const action = item.metadata?.write_action || operation.action || "";
+  return [action, memoryType, text].filter(Boolean).join(" · ");
 }
 
 function savepointFooter(checkpoint) {
