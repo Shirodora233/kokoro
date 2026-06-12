@@ -12,6 +12,9 @@ WriteAction = Literal[
     "create",
     "reuse",
     "attach",
+    "update",
+    "merge",
+    "invalidate",
     "flag_conflict",
     "ignore",
 ]
@@ -50,6 +53,9 @@ class MemoryWriteOperation:
     target_record_id: str | None = None
     target_candidate_id: str | None = None
     relation_type: str | None = None
+    replacement: MemoryRecord | None = None
+    merge_source_record_ids: list[str] = field(default_factory=list)
+    invalidated_record_ids: list[str] = field(default_factory=list)
     reason: str = ""
     confidence: ReconciliationConfidence = "medium"
     evidence: list[ReconciliationEvidence] = field(default_factory=list)
@@ -78,6 +84,7 @@ class MemoryReconciliationRequest:
     retrieval: CandidateRetrievalResult
     user_id: str | None = None
     session_id: str | None = None
+    active_memory_context: Any | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
@@ -88,5 +95,10 @@ class MemoryReconciliationRequest:
             "retrieval": self.retrieval.to_record(),
             "user_id": self.user_id,
             "session_id": self.session_id,
+            "active_memory_context": (
+                self.active_memory_context.to_record()
+                if hasattr(self.active_memory_context, "to_record")
+                else self.active_memory_context
+            ),
             "metadata": self.metadata,
         }

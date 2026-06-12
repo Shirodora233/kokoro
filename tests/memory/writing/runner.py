@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from memory.models import MemoryRecord, MemoryRecordType, MemorySourceRef
@@ -23,6 +24,10 @@ def main() -> int:
         test_attach_property_to_created_entity,
         test_attach_link_resolves_candidate_endpoints,
         test_duplicate_time_refs_in_same_plan_are_reused,
+        test_reuse_maps_same_plan_candidate,
+        test_update_rewrites_existing_record,
+        test_merge_marks_source_record,
+        test_invalidate_marks_existing_record,
         test_ignore_does_not_write,
         test_missing_attach_target_fails,
     ]
@@ -201,6 +206,86 @@ def test_duplicate_time_refs_in_same_plan_are_reused() -> None:
     assert len(result.created_records) == 1
     assert len(store.list_records(memory_type="time_ref")) == 1
     assert result.candidate_record_ids["time_1"] == result.candidate_record_ids["time_2"]
+
+
+def test_reuse_maps_same_plan_candidate() -> None:
+    store = InMemoryMemoryStore()
+    result = _apply(
+        store,
+        [
+            _operation("create", _candidate("entity", "茉莉花茶", "cand_tea")),
+            _operation(
+                "reuse",
+                _candidate("entity", "茉莉花茶", "cand_tea_dup"),
+                target_candidate_id="cand_tea",
+            ),
+        ],
+    )
+    assert len(result.created_records) == 1
+    assert len(result.reused_records) == 1
+    assert result.candidate_record_ids["cand_tea"] == (
+        result.candidate_record_ids["cand_tea_dup"]
+    )
+
+
+def test_update_rewrites_existing_record() -> None:
+    store = InMemoryMemoryStore(
+        [_record("ent_tea", "entity", "茶", client_id="ent_tea")]
+    )
+    result = _apply(
+        store,
+        [
+            _operation(
+                "update",
+                _candidate(
+                    "entity",
+                    "茉莉花茶",
+                    "cand_tea",
+                    metadata={"entity_type": "concept"},
+                ),
+                existing_record_id="ent_tea",
+            )
+        ],
+    )
+    assert [record.text for record in result.updated_records] == ["茉莉花茶"]
+    stored = list(store.get_records(["ent_tea"]))[0]
+    assert stored.text == "茉莉花茶"
+    assert stored.metadata["write_action"] == "update"
+
+
+def test_merge_marks_source_record() -> None:
+    store = InMemoryMemoryStore(
+        [
+            _record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea"),
+            _record("ent_jasmine", "entity", "jasmine tea", client_id="ent_jasmine"),
+        ]
+    )
+    operation = _operation(
+        "merge",
+        _candidate("entity", "茉莉花茶", "cand_tea"),
+        existing_record_id="ent_tea",
+    )
+    operation = replace(operation, merge_source_record_ids=["ent_jasmine"])
+    result = _apply(store, [operation])
+    assert [record.id for record in result.merged_records] == ["ent_jasmine"]
+    merged = list(store.get_records(["ent_jasmine"]))[0]
+    assert merged.metadata["status"] == "merged"
+    assert merged.metadata["merged_into_object_id"] == "ent_tea"
+
+
+def test_invalidate_marks_existing_record() -> None:
+    store = InMemoryMemoryStore(
+        [_record("prop_old", "property", "用户讨厌咖啡", client_id="prop_old")]
+    )
+    operation = _operation(
+        "invalidate",
+        _candidate("property", "用户现在喜欢咖啡", "cand_prop"),
+    )
+    operation = replace(operation, invalidated_record_ids=["prop_old"])
+    result = _apply(store, [operation])
+    assert [record.id for record in result.invalidated_records] == ["prop_old"]
+    invalidated = list(store.get_records(["prop_old"]))[0]
+    assert invalidated.metadata["status"] == "invalidated"
 
 
 def test_ignore_does_not_write() -> None:

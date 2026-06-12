@@ -23,6 +23,17 @@ class PersistentMemoryRepository(Protocol):
     def save_bundle(self, bundle: PersistentMemoryBundle) -> PersistentMemoryBundle:
         """Persist a normalized memory bundle and return stored objects."""
 
+    def update_object_status(
+        self,
+        object_id: str,
+        status: str,
+        *,
+        merged_into_object_id: str | None = None,
+        deleted_reason: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        """Update shared memory object lifecycle fields."""
+
     def get_event(self, event_id: str) -> PersistentEvent | None:
         """Load one event by id."""
 

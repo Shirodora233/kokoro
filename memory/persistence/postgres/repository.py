@@ -93,6 +93,35 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             metadata=dict(bundle.metadata),
         )
 
+    def update_object_status(
+        self,
+        object_id: str,
+        status: str,
+        *,
+        merged_into_object_id: str | None = None,
+        deleted_reason: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE memory_objects
+                SET status = %s,
+                    merged_into_object_id = %s,
+                    deleted_reason = COALESCE(%s, deleted_reason),
+                    metadata = metadata || %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    merged_into_object_id,
+                    deleted_reason,
+                    Jsonb(dict(metadata or {})),
+                    object_id,
+                ),
+            )
+
     def get_event(self, event_id: str) -> PersistentEvent | None:
         with self.database.connect() as connection:
             row = connection.execute(

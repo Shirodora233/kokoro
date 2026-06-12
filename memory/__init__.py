@@ -79,6 +79,8 @@ from .retrieval import (
 )
 from .reconciliation import (
     DeterministicMemoryReconciler,
+    LegacyDeterministicMemoryReconciler,
+    LLMMemoryReconciler,
     MemoryReconciler,
     MemoryReconciliationRequest,
     MemoryWriteOperation,
@@ -147,6 +149,8 @@ __all__ = [
     "LLMMemoryExtractionClient",
     "LLMMemoryExtractionCallResult",
     "LLMMemoryExtractor",
+    "LLMMemoryReconciler",
+    "LegacyDeterministicMemoryReconciler",
     "MemoryDebugRecorder",
     "MemoryDebugService",
     "MemoryDebugTrace",

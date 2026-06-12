@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sys
+import json
 from collections.abc import Callable
 from typing import Any
 
+from llm.interfaces import ChatCompletionResult, ChatMessageParam
 from memory.models import (
     MemoryObjectRef,
     MemoryRecord,
@@ -16,6 +18,7 @@ from memory.models import (
 )
 from memory.reconciliation import (
     DeterministicMemoryReconciler,
+    LLMMemoryReconciler,
     MemoryReconciliationRequest,
     MemoryWritePlan,
 )
@@ -35,6 +38,9 @@ def main() -> int:
         test_property_does_not_reuse_parent_entity_text_match,
         test_reuses_direct_property_match,
         test_attaches_description_to_reused_event,
+        test_llm_reconciler_reuses_direct_match,
+        test_llm_reconciler_repairs_invalid_decision,
+        test_llm_reconciler_falls_back_on_bad_json,
         test_plan_is_provider_neutral_dict,
     ]
     for test in tests:
@@ -208,6 +214,74 @@ def test_attaches_description_to_reused_event() -> None:
     assert desc_operation.relation_type == "has_description"
 
 
+def test_llm_reconciler_reuses_direct_match() -> None:
+    store = InMemoryMemoryStore(
+        [_record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea")]
+    )
+    candidates = [_candidate("entity", "茉莉花茶", client_id="cand_tea")]
+    response = {
+        "decisions": [
+            {
+                "candidate_id": "cand_tea",
+                "action": "reuse",
+                "existing_record_id": "ent_tea",
+                "confidence": "high",
+                "reason": "same entity",
+            }
+        ],
+        "summary": "reuse existing entity",
+    }
+    plan = _llm_plan(store, candidates, [response])
+    operation = _operation(plan, "cand_tea")
+    assert operation.action == "reuse"
+    assert operation.existing_record_id == "ent_tea"
+    assert plan.metadata["reconciler"] == "llm"
+    assert plan.metadata["summary"] == "reuse existing entity"
+
+
+def test_llm_reconciler_repairs_invalid_decision() -> None:
+    store = InMemoryMemoryStore(
+        [_record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea")]
+    )
+    candidates = [_candidate("entity", "茉莉花茶", client_id="cand_tea")]
+    plan = _llm_plan(
+        store,
+        candidates,
+        [
+            {
+                "decisions": [
+                    {
+                        "candidate_id": "cand_tea",
+                        "action": "reuse",
+                        "existing_record_id": "missing",
+                    }
+                ]
+            },
+            {
+                "decisions": [
+                    {
+                        "candidate_id": "cand_tea",
+                        "action": "reuse",
+                        "existing_record_id": "ent_tea",
+                    }
+                ]
+            },
+        ],
+    )
+    assert _operation(plan, "cand_tea").existing_record_id == "ent_tea"
+    assert plan.metadata["repair_attempts"] == 1
+
+
+def test_llm_reconciler_falls_back_on_bad_json() -> None:
+    store = InMemoryMemoryStore()
+    candidates = [_candidate("entity", "蓝色收音机", client_id="cand_radio")]
+    plan = _llm_plan(store, candidates, ["not json"])
+    operation = _operation(plan, "cand_radio")
+    assert operation.action == "create"
+    assert plan.metadata["reconciler"] == "llm_fallback"
+    assert plan.metadata["llm_errors"]
+
+
 def test_plan_is_provider_neutral_dict() -> None:
     store = InMemoryMemoryStore()
     candidates = [_candidate("entity", "蓝色收音机", client_id="cand_radio")]
@@ -229,6 +303,30 @@ def _plan(
         session_id=SESSION_ID,
     )
     return DeterministicMemoryReconciler().reconcile(
+        MemoryReconciliationRequest(
+            candidates=candidates,
+            retrieval=retrieval,
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+        )
+    )
+
+
+def _llm_plan(
+    store: InMemoryMemoryStore,
+    candidates: list[MemoryRecord],
+    responses: list[dict[str, Any] | str],
+) -> MemoryWritePlan:
+    retrieval = CandidateMemoryMatcher().match(
+        candidates,
+        _search_result_from_store(store),
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+    )
+    return LLMMemoryReconciler(
+        chat_client=_FakeChatClient(responses),
+        max_repair_attempts=1,
+    ).reconcile(
         MemoryReconciliationRequest(
             candidates=candidates,
             retrieval=retrieval,
@@ -299,6 +397,25 @@ def _operation(plan: MemoryWritePlan, candidate_id: str):
         if operation.candidate_id == candidate_id:
             return operation
     raise AssertionError(f"operation {candidate_id!r} not found")
+
+
+class _FakeChatClient:
+    def __init__(self, responses: list[dict[str, Any] | str]) -> None:
+        self._responses = list(responses)
+        self.calls: list[list[ChatMessageParam]] = []
+
+    def complete(
+        self,
+        messages: list[ChatMessageParam],
+        model: str | None = None,
+        temperature: float | None = None,
+    ) -> ChatCompletionResult:
+        self.calls.append(messages)
+        if not self._responses:
+            raise AssertionError("fake chat client has no response left")
+        response = self._responses.pop(0)
+        content = response if isinstance(response, str) else json.dumps(response)
+        return ChatCompletionResult(content=content, model=model, usage={"fake": 1})
 
 
 if __name__ == "__main__":

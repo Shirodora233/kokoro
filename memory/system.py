@@ -209,6 +209,7 @@ class MemoryRuntime(MemorySystem):
                 retrieval=candidate_retrieval,
                 user_id=turn.user_id,
                 session_id=turn.session_id,
+                active_memory_context=active_context,
                 metadata={
                     "source": "commit_turn",
                     "assistant_message_id": (
@@ -240,9 +241,16 @@ class MemoryRuntime(MemorySystem):
             *write_result.created_records,
             *write_result.attached_records,
         ]
+        updated_records = [
+            *write_result.reused_records,
+            *write_result.updated_records,
+            *write_result.merged_records,
+            *write_result.invalidated_records,
+        ]
         active_records = [
             *created_records,
             *write_result.reused_records,
+            *write_result.updated_records,
             *self._retrieved_active_records(snapshot.retrieved_memories),
         ]
         refreshed_context = self.active_cache.refresh(
@@ -259,7 +267,7 @@ class MemoryRuntime(MemorySystem):
             memory_context=snapshot.memory_context,
             context_actions=context_actions,
             created_memories=created_records,
-            updated_memories=write_result.reused_records,
+            updated_memories=updated_records,
             metadata={
                 "memory_runtime": self.__class__.__name__,
                 "runtime_store": self.store.__class__.__name__,

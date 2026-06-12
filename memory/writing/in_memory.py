@@ -24,8 +24,10 @@ class InMemoryMemoryWritePlanApplier:
         state = _ApplyState()
         operations = list(request.plan.operations)
 
-        self._apply_reuse_ignore_conflicts(operations, state)
+        self._apply_reuse_ignore_conflicts(operations, request, state)
         self._apply_creates(operations, request, state)
+        self._apply_same_plan_reuses(operations, state)
+        self._apply_status_changes(operations, request, state)
         self._apply_attached_records(operations, request, state)
         self._apply_relation_records(operations, request, state)
 
@@ -33,6 +35,9 @@ class InMemoryMemoryWritePlanApplier:
             created_records=state.created_records,
             reused_records=state.reused_records,
             attached_records=state.attached_records,
+            updated_records=state.updated_records,
+            merged_records=state.merged_records,
+            invalidated_records=state.invalidated_records,
             ignored_operations=state.ignored_operations,
             conflict_operations=state.conflict_operations,
             failed_operations=state.failed_operations,
@@ -44,6 +49,9 @@ class InMemoryMemoryWritePlanApplier:
                 "created_count": len(state.created_records),
                 "reused_count": len(state.reused_records),
                 "attached_count": len(state.attached_records),
+                "updated_count": len(state.updated_records),
+                "merged_count": len(state.merged_records),
+                "invalidated_count": len(state.invalidated_records),
                 "failed_count": len(state.failed_operations),
             },
         )
@@ -51,16 +59,21 @@ class InMemoryMemoryWritePlanApplier:
     def _apply_reuse_ignore_conflicts(
         self,
         operations: Sequence[MemoryWriteOperation],
+        request: MemoryWriteRequest,
         state: "_ApplyState",
     ) -> None:
         for operation in operations:
             if operation.action == "reuse":
+                if operation.target_candidate_id:
+                    continue
                 self._apply_reuse(operation, state)
             elif operation.action == "ignore":
                 state.ignored_operations.append(operation)
                 self._map_existing_candidate(operation, state)
             elif operation.action == "flag_conflict":
                 state.conflict_operations.append(operation)
+            elif operation.action == "update":
+                self._apply_update(operation, request=request, state=state)
 
     def _apply_creates(
         self,
@@ -84,6 +97,58 @@ class InMemoryMemoryWritePlanApplier:
                 state=state,
                 bucket=state.created_records,
             )
+
+    def _apply_same_plan_reuses(
+        self,
+        operations: Sequence[MemoryWriteOperation],
+        state: "_ApplyState",
+    ) -> None:
+        for operation in operations:
+            if operation.action != "reuse" or not operation.target_candidate_id:
+                continue
+            record = self._record_for_candidate_id(operation.target_candidate_id, state)
+            if record is None:
+                self._fail(operation, "reuse target candidate could not be resolved", state)
+                continue
+            state.reused_records.append(record)
+            self._map_candidate(operation, record, state)
+
+    def _apply_status_changes(
+        self,
+        operations: Sequence[MemoryWriteOperation],
+        request: MemoryWriteRequest,
+        state: "_ApplyState",
+    ) -> None:
+        for operation in operations:
+            if operation.action == "merge":
+                target_id = operation.existing_record_id or self._target_record_id(
+                    operation,
+                    state,
+                )
+                for record_id in operation.merge_source_record_ids:
+                    record = self._status_record(
+                        record_id,
+                        "merged",
+                        operation,
+                        request,
+                        state,
+                        merged_into_object_id=target_id,
+                    )
+                    if record is not None:
+                        state.merged_records.append(record)
+                self._map_existing_candidate(operation, state)
+            elif operation.action == "invalidate":
+                for record_id in operation.invalidated_record_ids:
+                    record = self._status_record(
+                        record_id,
+                        "invalidated",
+                        operation,
+                        request,
+                        state,
+                    )
+                    if record is not None:
+                        state.invalidated_records.append(record)
+                self._map_existing_candidate(operation, state)
 
     def _apply_attached_records(
         self,
@@ -148,6 +213,25 @@ class InMemoryMemoryWritePlanApplier:
         state.reused_records.append(record)
         self._map_candidate(operation, record, state)
 
+    def _apply_update(
+        self,
+        operation: MemoryWriteOperation,
+        request: MemoryWriteRequest | None,
+        state: "_ApplyState",
+    ) -> None:
+        if not operation.existing_record_id:
+            self._fail(operation, "update operation has no existing_record_id", state)
+            return
+        records = list(self.store.get_records([operation.existing_record_id]))
+        if not records:
+            self._fail(operation, "existing record was not found", state)
+            return
+        updated = self._updated_record(records[0], operation, request)
+        stored = list(self.store.save_records([updated]))[0]
+        state.updated_records.append(stored)
+        self._map_candidate(operation, stored, state)
+        self._remember_same_plan_record(stored, state)
+
     def _save_operation_record(
         self,
         operation: MemoryWriteOperation,
@@ -190,6 +274,29 @@ class InMemoryMemoryWritePlanApplier:
             metadata.setdefault("relation_type", operation.relation_type)
         metadata.update(extra_metadata or {})
         return replace(operation.record, metadata=metadata)
+
+    def _updated_record(
+        self,
+        existing: MemoryRecord,
+        operation: MemoryWriteOperation,
+        request: MemoryWriteRequest | None,
+    ) -> MemoryRecord:
+        replacement = operation.replacement or operation.record or existing
+        metadata = {**dict(existing.metadata), **dict(replacement.metadata)}
+        metadata["write_action"] = operation.action
+        metadata["write_reason"] = operation.reason
+        if request is not None:
+            if request.user_id is not None:
+                metadata.setdefault("user_id", request.user_id)
+            if request.session_id is not None:
+                metadata.setdefault("session_id", request.session_id)
+        return replace(
+            replacement,
+            id=existing.id,
+            memory_type=existing.memory_type,
+            source_refs=[*existing.source_refs, *replacement.source_refs],
+            metadata=metadata,
+        )
 
     def _target_record_id(
         self,
@@ -250,6 +357,43 @@ class InMemoryMemoryWritePlanApplier:
             return mapped
         existing = list(self.store.get_records([candidate_or_record_id]))
         return existing[0].id if existing else None
+
+    def _record_for_candidate_id(
+        self,
+        candidate_id: str,
+        state: "_ApplyState",
+    ) -> MemoryRecord | None:
+        record_id = state.candidate_record_ids.get(candidate_id)
+        if not record_id:
+            return None
+        records = list(self.store.get_records([record_id]))
+        return records[0] if records else None
+
+    def _status_record(
+        self,
+        record_id: str,
+        status: str,
+        operation: MemoryWriteOperation,
+        request: MemoryWriteRequest,
+        state: "_ApplyState",
+        merged_into_object_id: str | None = None,
+    ) -> MemoryRecord | None:
+        records = list(self.store.get_records([record_id]))
+        if not records:
+            self._fail(operation, f"status target was not found: {record_id}", state)
+            return None
+        metadata = dict(records[0].metadata)
+        metadata["status"] = status
+        metadata["write_action"] = operation.action
+        metadata["write_reason"] = operation.reason
+        if merged_into_object_id:
+            metadata["merged_into_object_id"] = merged_into_object_id
+        if request.user_id is not None:
+            metadata.setdefault("user_id", request.user_id)
+        if request.session_id is not None:
+            metadata.setdefault("session_id", request.session_id)
+        stored = list(self.store.save_records([replace(records[0], metadata=metadata)]))[0]
+        return stored
 
     def _map_existing_candidate(
         self,
@@ -335,6 +479,9 @@ class _ApplyState:
         self.created_records: list[MemoryRecord] = []
         self.reused_records: list[MemoryRecord] = []
         self.attached_records: list[MemoryRecord] = []
+        self.updated_records: list[MemoryRecord] = []
+        self.merged_records: list[MemoryRecord] = []
+        self.invalidated_records: list[MemoryRecord] = []
         self.ignored_operations: list[MemoryWriteOperation] = []
         self.conflict_operations: list[MemoryWriteOperation] = []
         self.failed_operations: list[MemoryWriteFailure] = []

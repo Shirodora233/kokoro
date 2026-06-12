@@ -1,4 +1,9 @@
-"""Deterministic baseline memory reconciler."""
+"""Legacy deterministic baseline memory reconciler.
+
+This module is the rule-based fallback for the LLM reconciler. It is kept for
+tests, local/offline operation, and safe fallback behavior, but it is no longer
+the target reconciliation implementation.
+"""
 
 from __future__ import annotations
 
@@ -25,8 +30,8 @@ class _ResolvedCandidate:
     action: str | None = None
 
 
-class DeterministicMemoryReconciler:
-    """Rule-based reconciler used before LLM reconciliation exists."""
+class LegacyDeterministicMemoryReconciler:
+    """Legacy rule-based reconciler used as an LLM fallback."""
 
     def reconcile(self, request: MemoryReconciliationRequest) -> MemoryWritePlan:
         candidate_by_id = self._candidate_index(request.candidates)
@@ -336,3 +341,6 @@ class DeterministicMemoryReconciler:
         if score >= 1.5:
             return "medium"
         return "low"
+
+
+DeterministicMemoryReconciler = LegacyDeterministicMemoryReconciler
