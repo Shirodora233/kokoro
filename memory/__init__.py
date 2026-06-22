@@ -74,6 +74,7 @@ from .retrieval import (
     NormalizedEntityMemoryView,
     NormalizedEventMemoryView,
     NormalizedMemoryContextRetriever,
+    PostgresHybridMemorySearch,
     PostgresNormalizedMemorySearch,
     RelatedMemory,
 )
@@ -177,6 +178,7 @@ __all__ = [
     "ReconciliationEvidence",
     "RelatedMemory",
     "RetrievalDebugInfo",
+    "PostgresHybridMemorySearch",
     "PostgresNormalizedMemorySearch",
     "TimeCertainty",
     "TimeKind",

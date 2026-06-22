@@ -37,7 +37,7 @@ class PostgresNormalizedMemorySearch:
             )
 
         query = (request.query or "").strip()
-        terms = _search_terms(query)
+        terms = search_terms_from_query(query)
         if not terms:
             recent_hits = self._recent_hits(request, limit)
             ranked_hits = self.ranker.rank(recent_hits, request)
@@ -162,7 +162,7 @@ class PostgresNormalizedMemorySearch:
             reverse=True,
         )
         return [
-            _row_to_hit(
+            row_to_search_hit(
                 row,
                 score=0.5,
                 reason="recent_normalized_memory",
@@ -183,7 +183,7 @@ class PostgresNormalizedMemorySearch:
         terms: Sequence[str],
         extra_join: str = "",
     ) -> list[MemorySearchHit]:
-        conditions, params = _scope_conditions(request)
+        conditions, params = build_scope_conditions(request)
         conditions.insert(0, "o.status = 'active'")
         conditions.insert(0, "o.object_type = %s")
         params.insert(0, _object_type_for_search(object_type))
@@ -219,11 +219,11 @@ class PostgresNormalizedMemorySearch:
                 (object_type, *params, per_table_limit),
             ).fetchall()
         return [
-            _row_to_hit(
+            row_to_search_hit(
                 row,
                 score=base_score,
                 reason=reason,
-                match_quality=_match_quality(row["matched_text"], terms),
+                match_quality=match_quality_for_terms(row["matched_text"], terms),
                 terms=terms,
             )
             for row in rows
@@ -239,7 +239,7 @@ class PostgresNormalizedMemorySearch:
         limit: int,
         extra_join: str = "",
     ) -> list[Mapping[str, Any]]:
-        conditions, params = _scope_conditions(request)
+        conditions, params = build_scope_conditions(request)
         conditions.insert(0, "o.status = 'active'")
         conditions.insert(0, "o.object_type = %s")
         params.insert(0, _object_type_for_search(object_type))
@@ -269,7 +269,7 @@ class PostgresNormalizedMemorySearch:
             ).fetchall()
 
 
-def _scope_conditions(request: MemorySearchRequest) -> tuple[list[str], list[object]]:
+def build_scope_conditions(request: MemorySearchRequest) -> tuple[list[str], list[object]]:
     conditions: list[str] = []
     params: list[object] = []
     visible_scopes = _visible_session_scopes(request)
@@ -315,7 +315,7 @@ def _visible_session_scopes(
     return [item for item in raw if isinstance(item, Mapping)]
 
 
-def _search_terms(query: str) -> list[str]:
+def search_terms_from_query(query: str) -> list[str]:
     return [term for term in query.casefold().split() if term]
 
 
@@ -323,7 +323,7 @@ def _object_type_for_search(object_type: MemoryObjectType) -> str:
     return "relation" if object_type == "link" else object_type
 
 
-def _match_quality(text: str | None, terms: Sequence[str]) -> str:
+def match_quality_for_terms(text: str | None, terms: Sequence[str]) -> str:
     if not text:
         return "term"
     normalized = text.casefold()
@@ -339,7 +339,7 @@ def _match_quality(text: str | None, terms: Sequence[str]) -> str:
     return "term"
 
 
-def _row_to_hit(
+def row_to_search_hit(
     row: Mapping[str, Any],
     score: float,
     reason: str,

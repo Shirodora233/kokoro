@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any, Sequence
 
@@ -32,6 +33,8 @@ from .row_mappers import (
 )
 from .source_repository import PostgresMemorySourceRepository
 
+LOGGER = logging.getLogger(__name__)
+
 
 class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
     """Repository for normalized memory tables backed by memory_objects."""
@@ -41,6 +44,7 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         database_url: str | None = None,
         database: PostgresPersistentMemoryDatabase | None = None,
         ensure_schema: bool = True,
+        embedding_service: object | None = None,
     ) -> None:
         if database is None:
             if database_url is None:
@@ -48,6 +52,7 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             database = PostgresPersistentMemoryDatabase(database_url)
         self.database = database
         self.sources = PostgresMemorySourceRepository()
+        self.embedding_service = embedding_service
         if ensure_schema:
             self.ensure_schema()
 
@@ -56,7 +61,24 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
 
     def save_bundle(self, bundle: PersistentMemoryBundle) -> PersistentMemoryBundle:
         with self.database.connect() as connection:
-            return self.save_bundle_in_connection(connection, bundle)
+            result = self.save_bundle_in_connection(connection, bundle)
+            self._maybe_generate_embeddings(connection, result)
+            return result
+
+    def _maybe_generate_embeddings(
+        self,
+        connection: Any,
+        bundle: PersistentMemoryBundle,
+    ) -> None:
+        if self.embedding_service is None:
+            return
+        try:
+            self.embedding_service.embed_bundle(connection, bundle)
+        except Exception:
+            LOGGER.warning(
+                "Embedding generation failed for bundle — memory write unaffected",
+                exc_info=True,
+            )
 
     def save_bundle_in_connection(
         self,

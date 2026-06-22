@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from llm.config import LLMConfig
+from llm.embedding import OpenAIEmbeddingClient
 from llm.interfaces import ChatClient, ChatMessageParam
 from llm.openai_client import OpenAIChatClient
 from memory import (
@@ -33,10 +34,12 @@ from memory import (
     MemoryTurnResult,
     MemoryTurnSnapshot,
     NormalizedMemoryContextRetriever,
+    PostgresHybridMemorySearch,
     PostgresNormalizedMemorySearch,
     MemoryRuntime,
     PersistentMemoryWritePlanApplier,
 )
+from memory.embedding import MemoryEmbeddingService
 
 from .config import ConversationRuntimeConfig, StorageConfig
 from .context import ModelContext, PaginatedMessages, SessionManager
@@ -92,11 +95,40 @@ class ConversationService:
         persistent_repository = PostgresPersistentMemoryRepository(
             storage_config.database_url
         )
+
+        # Create shared embedding client (reused by both write and search paths)
+        embedding_client: object | None = None
+        if memory_config.embedding_enabled or memory_config.embedding_search_enabled:
+            embedding_client = OpenAIEmbeddingClient(config)
+
+        # Wire embedding service if enabled
+        if memory_config.embedding_enabled:
+            embedding_service = MemoryEmbeddingService(
+                embedding_client=embedding_client,
+                database_url=storage_config.database_url,
+                model=memory_config.embedding_model,
+                dimensions=memory_config.embedding_dimensions,
+                batch_size=memory_config.embedding_batch_size,
+            )
+            persistent_repository.embedding_service = embedding_service
+
+        # Choose search implementation
+        if memory_config.embedding_search_enabled:
+            search = PostgresHybridMemorySearch(
+                repository=persistent_repository,
+                embedding_client=embedding_client,
+                embedding_model=memory_config.embedding_model,
+                fusion_method=memory_config.embedding_fusion_method,
+                vector_weight=memory_config.embedding_vector_weight,
+            )
+        else:
+            search = PostgresNormalizedMemorySearch(persistent_repository)
+
         memory_write_applier = PersistentMemoryWritePlanApplier(persistent_repository)
         memory_context_retriever: MemoryContextRetriever = (
             NormalizedMemoryContextRetriever(
                 persistent_repository,
-                search=PostgresNormalizedMemorySearch(persistent_repository),
+                search=search,
             )
         )
         chat_client = OpenAIChatClient(config)
@@ -1262,7 +1294,9 @@ class _ConnectionPersistentMemoryRepository:
         self.connection = connection
 
     def save_bundle(self, bundle):
-        return self.repository.save_bundle_in_connection(self.connection, bundle)
+        result = self.repository.save_bundle_in_connection(self.connection, bundle)
+        self.repository._maybe_generate_embeddings(self.connection, result)
+        return result
 
     def __getattr__(self, name: str):
         return getattr(self.repository, name)
