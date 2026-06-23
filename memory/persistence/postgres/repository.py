@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from psycopg.types.json import Jsonb
 
@@ -62,18 +62,18 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
     def save_bundle(self, bundle: PersistentMemoryBundle) -> PersistentMemoryBundle:
         with self.database.connect() as connection:
             result = self.save_bundle_in_connection(connection, bundle)
-            self._maybe_generate_embeddings(connection, result)
-            return result
+        self._maybe_generate_embeddings(result)
+        return result
 
     def _maybe_generate_embeddings(
         self,
-        connection: Any,
         bundle: PersistentMemoryBundle,
     ) -> None:
         if self.embedding_service is None:
             return
         try:
-            self.embedding_service.embed_bundle(connection, bundle)
+            with self.database.connect() as connection:
+                self.embedding_service.embed_bundle(connection, bundle)
         except Exception:
             LOGGER.warning(
                 "Embedding generation failed for bundle — memory write unaffected",
@@ -274,6 +274,7 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentDescription]:
         conditions = ["o.status = 'active'"]
         params: list[object] = []
@@ -283,10 +284,19 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 return []
             conditions.append(f"d.event_id IN ({_placeholders(ids)})")
             params.extend(ids)
+            if user_id is not None or session_id is not None:
+                scope_conditions, scope_params = _object_scope_conditions(
+                    user_id,
+                    session_id,
+                    visible_session_scopes=visible_session_scopes,
+                )
+                conditions.extend(scope_conditions)
+                params.extend(scope_params)
         else:
             scope_conditions, scope_params = _object_scope_conditions(
                 user_id,
                 session_id,
+                visible_session_scopes=visible_session_scopes,
             )
             conditions.extend(scope_conditions)
             params.extend(scope_params)
@@ -311,6 +321,7 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentProperty]:
         conditions = ["o.status = 'active'"]
         params: list[object] = []
@@ -320,10 +331,19 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 return []
             conditions.append(f"p.entity_id IN ({_placeholders(ids)})")
             params.extend(ids)
+            if user_id is not None or session_id is not None:
+                scope_conditions, scope_params = _object_scope_conditions(
+                    user_id,
+                    session_id,
+                    visible_session_scopes=visible_session_scopes,
+                )
+                conditions.extend(scope_conditions)
+                params.extend(scope_params)
         else:
             scope_conditions, scope_params = _object_scope_conditions(
                 user_id,
                 session_id,
+                visible_session_scopes=visible_session_scopes,
             )
             conditions.extend(scope_conditions)
             params.extend(scope_params)
@@ -347,6 +367,8 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         object_refs: Sequence[PersistentObjectRef] | None = None,
         user_id: str | None = None,
         limit: int | None = None,
+        session_id: str | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentLink]:
         conditions = ["o.status = 'active'"]
         params: list[object] = []
@@ -362,9 +384,14 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 f"OR r.to_object_id IN ({_placeholders(ref_ids)}))"
             )
             params.extend([*ref_ids, *ref_ids])
-        if user_id is not None:
-            conditions.append("(o.user_id IS NULL OR o.user_id = %s)")
-            params.append(user_id)
+        if user_id is not None or session_id is not None:
+            scope_conditions, scope_params = _object_scope_conditions(
+                user_id,
+                session_id,
+                visible_session_scopes=visible_session_scopes,
+            )
+            conditions.extend(scope_conditions)
+            params.extend(scope_params)
         query = (
             f"{_RELATION_SELECT} WHERE {' AND '.join(conditions)} "
             "ORDER BY o.updated_at DESC, r.id ASC"
@@ -384,6 +411,9 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         self,
         target_refs: Sequence[PersistentObjectRef] | None = None,
         limit: int | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentTimeLink]:
         conditions = ["o.status = 'active'"]
         params: list[object] = []
@@ -396,6 +426,14 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
                 return []
             conditions.append(f"tl.target_object_id IN ({_placeholders(target_ids)})")
             params.extend(target_ids)
+        if user_id is not None or session_id is not None:
+            scope_conditions, scope_params = _object_scope_conditions(
+                user_id,
+                session_id,
+                visible_session_scopes=visible_session_scopes,
+            )
+            conditions.extend(scope_conditions)
+            params.extend(scope_params)
         query = (
             f"{_TIME_LINK_SELECT} WHERE {' AND '.join(conditions)} "
             "ORDER BY o.updated_at DESC, tl.id ASC"
@@ -435,6 +473,136 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
             for time_ref_id in ids
             if time_ref_id in refs_by_id
         ]
+
+    # ----------------------------------------------------------------
+    # User-facing memory management
+    # ----------------------------------------------------------------
+
+    def list_user_memories(
+        self,
+        user_id: str,
+        memory_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List active memory objects for a user (for user-facing CRUD)."""
+        type_condition = ""
+        params: list[object] = [user_id]
+        if memory_type and memory_type in {
+            "event", "entity", "description", "property",
+        }:
+            type_condition = "AND o.object_type = %s"
+            params.append(memory_type)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT o.id, o.object_type, o.user_id, o.session_id,
+                       o.status, o.confidence, o.importance,
+                       o.created_at, o.updated_at, o.metadata
+                FROM memory_objects o
+                WHERE o.user_id = %s
+                  AND o.status = 'active'
+                  {type_condition}
+                ORDER BY o.updated_at DESC, o.id ASC
+                LIMIT %s
+                """,
+                (*params, max(0, limit)),
+            ).fetchall()
+        return [_user_memory_dict(row) for row in rows]
+
+    def get_user_memory_detail(
+        self,
+        object_id: str,
+    ) -> dict[str, Any] | None:
+        """Get detail for a single memory object with source refs."""
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT o.id, o.object_type, o.user_id, o.session_id,
+                       o.status, o.confidence, o.importance,
+                       o.created_at, o.updated_at, o.metadata
+                FROM memory_objects o
+                WHERE o.id = %s AND o.status = 'active'
+                """,
+                (object_id,),
+            ).fetchone()
+            if not row:
+                return None
+            result = _user_memory_dict(row)
+            sources = self.sources.load_source_refs(connection, object_id)
+            result["source_refs"] = [
+                {
+                    "source_type": s.source_type,
+                    "source_id": s.source_id,
+                    "quote": s.quote,
+                }
+                for s in sources
+            ]
+            # Add content from the type-specific table
+            content = self._load_memory_content(connection, row["object_type"], object_id)
+            if content:
+                result["content"] = content
+            return result
+
+    def forget_memory(self, object_id: str) -> bool:
+        """Tombstone a single memory object by id."""
+        with self.database.connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE memory_objects
+                SET status = 'deleted',
+                    deleted_at = NOW(),
+                    deleted_reason = 'user_requested',
+                    updated_at = NOW()
+                WHERE id = %s AND status = 'active'
+                """,
+                (object_id,),
+            )
+            if result.rowcount > 0:
+                connection.execute(
+                    """
+                    DELETE FROM memory_object_embeddings
+                    WHERE object_id = %s
+                    """,
+                    (object_id,),
+                )
+            return result.rowcount > 0
+
+    @staticmethod
+    def _load_memory_content(
+        connection: Any,
+        object_type: str,
+        object_id: str,
+    ) -> dict[str, Any] | None:
+        """Load type-specific content for a memory object."""
+        if object_type == "event":
+            row = connection.execute(
+                "SELECT title, summary, event_type FROM memory_events WHERE id = %s",
+                (object_id,),
+            ).fetchone()
+            if row:
+                return {"title": row["title"], "summary": row["summary"], "event_type": row["event_type"]}
+        elif object_type == "entity":
+            row = connection.execute(
+                "SELECT name, entity_type, identity_summary FROM memory_entities WHERE id = %s",
+                (object_id,),
+            ).fetchone()
+            if row:
+                return {"name": row["name"], "entity_type": row["entity_type"], "identity_summary": row["identity_summary"]}
+        elif object_type == "description":
+            row = connection.execute(
+                "SELECT content, description_type FROM memory_descriptions WHERE id = %s",
+                (object_id,),
+            ).fetchone()
+            if row:
+                return {"content": row["content"], "description_type": row["description_type"]}
+        elif object_type == "property":
+            row = connection.execute(
+                "SELECT content, property_type FROM memory_properties WHERE id = %s",
+                (object_id,),
+            ).fetchone()
+            if row:
+                return {"content": row["content"], "property_type": row["property_type"]}
+        return None
 
     def _save_event(
         self,
@@ -873,6 +1041,99 @@ class PostgresPersistentMemoryRepository(PersistentMemoryRepository):
         ).fetchone()
         return row["id"] if row else None
 
+    def tombstone_by_session_id(
+        self,
+        session_id: str,
+        *,
+        deleted_reason: str = "session_deleted",
+    ) -> int:
+        """Soft-delete active memory objects for a session and their embeddings."""
+        with self.database.connect() as connection:
+            # Delete embeddings first (FK to memory_objects)
+            connection.execute(
+                """
+                DELETE FROM memory_object_embeddings
+                WHERE object_id IN (
+                    SELECT id FROM memory_objects
+                    WHERE session_id = %s AND status = 'active'
+                )
+                """,
+                (session_id,),
+            )
+            # Tombstone memory objects
+            result = connection.execute(
+                """
+                UPDATE memory_objects
+                SET status = 'deleted',
+                    deleted_at = NOW(),
+                    deleted_reason = %s,
+                    updated_at = NOW()
+                WHERE session_id = %s
+                  AND status = 'active'
+                """,
+                (deleted_reason, session_id),
+            )
+            return result.rowcount
+
+    def tombstone_by_user_id(
+        self,
+        user_id: str,
+        *,
+        deleted_reason: str = "user_deleted",
+    ) -> int:
+        """Soft-delete active memory objects for a user and their embeddings."""
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM memory_object_embeddings
+                WHERE object_id IN (
+                    SELECT id FROM memory_objects
+                    WHERE user_id = %s AND status = 'active'
+                )
+                """,
+                (user_id,),
+            )
+            result = connection.execute(
+                """
+                UPDATE memory_objects
+                SET status = 'deleted',
+                    deleted_at = NOW(),
+                    deleted_reason = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                  AND status = 'active'
+                """,
+                (deleted_reason, user_id),
+            )
+            return result.rowcount
+
+    def delete_all_memory(self) -> dict[str, int]:
+        """Hard-delete all memory data (objects, embeddings, source refs)."""
+        with self.database.connect() as connection:
+            embeddings = connection.execute(
+                "DELETE FROM memory_object_embeddings"
+            ).rowcount
+            sources = connection.execute(
+                "DELETE FROM memory_sources"
+            ).rowcount
+            objects_result = connection.execute(
+                "DELETE FROM memory_objects"
+            ).rowcount
+            # Also clean up sub-tables that reference memory_objects
+            connection.execute("DELETE FROM memory_entity_aliases")
+            connection.execute("DELETE FROM memory_events")
+            connection.execute("DELETE FROM memory_entities")
+            connection.execute("DELETE FROM memory_descriptions")
+            connection.execute("DELETE FROM memory_properties")
+            connection.execute("DELETE FROM memory_relations")
+            connection.execute("DELETE FROM memory_time_refs")
+            connection.execute("DELETE FROM memory_time_links")
+        return {
+            "memory_objects": objects_result,
+            "memory_object_embeddings": embeddings,
+            "memory_sources": sources,
+        }
+
 
 _OBJECT_COLUMNS = """
     o.user_id,
@@ -976,6 +1237,29 @@ _TIME_LINK_SELECT = f"""
 """
 
 
+def _user_memory_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a memory_objects row to a user-facing dict."""
+    result: dict[str, Any] = {
+        "id": row["id"],
+        "object_type": row["object_type"],
+        "user_id": row["user_id"],
+        "session_id": row["session_id"],
+        "status": row["status"],
+        "confidence": row["confidence"],
+        "importance": row["importance"],
+    }
+    created_at = row.get("created_at")
+    if created_at is not None:
+        result["created_at"] = str(created_at)
+    updated_at = row.get("updated_at")
+    if updated_at is not None:
+        result["updated_at"] = str(updated_at)
+    metadata = row.get("metadata")
+    if isinstance(metadata, Mapping):
+        result["metadata"] = dict(metadata)
+    return result
+
+
 def _required_ref(value: str | None, name: str) -> str:
     if not value:
         raise ValueError(f"{name} is required")
@@ -998,14 +1282,45 @@ def _scope(user_id: str | None, session_id: str | None) -> str:
 def _object_scope_conditions(
     user_id: str | None,
     session_id: str | None,
+    *,
+    visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[list[str], list[object]]:
     conditions: list[str] = []
     params: list[object] = []
+    visible_scopes = [
+        scope for scope in visible_session_scopes or []
+        if isinstance(scope, Mapping)
+    ]
     if user_id is not None or session_id is not None:
         conditions.append("(o.user_id IS NULL OR o.user_id = %s)")
         params.append(user_id)
-        conditions.append("(o.session_id IS NULL OR o.session_id = %s)")
-        params.append(session_id)
+        if visible_scopes:
+            session_conditions = ["o.session_id IS NULL"]
+            for scope in visible_scopes:
+                scoped_session_id = scope.get("session_id")
+                max_sequence = scope.get("max_checkpoint_sequence")
+                if not isinstance(scoped_session_id, str):
+                    continue
+                if isinstance(max_sequence, int):
+                    session_conditions.append(
+                        """
+                        (
+                          o.session_id = %s
+                          AND (
+                            o.created_checkpoint_id IS NULL
+                            OR cp.sequence <= %s
+                          )
+                        )
+                        """
+                    )
+                    params.extend([scoped_session_id, max_sequence])
+                else:
+                    session_conditions.append("o.session_id = %s")
+                    params.append(scoped_session_id)
+            conditions.append("(" + " OR ".join(session_conditions) + ")")
+        else:
+            conditions.append("(o.session_id IS NULL OR o.session_id = %s)")
+            params.append(session_id)
     else:
         conditions.append("TRUE")
     return conditions, params

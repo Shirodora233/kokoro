@@ -572,7 +572,7 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             id=item.id,
             memory_type="event",
             text=item.title,
-            source_refs=[],
+            source_refs=_convert_source_refs(item.source_refs),
             metadata={
                 **dict(item.metadata),
                 "summary": item.summary,
@@ -588,7 +588,7 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             id=item.id,
             memory_type="description",
             text=item.content,
-            source_refs=[],
+            source_refs=_convert_source_refs(item.source_refs),
             metadata={
                 **dict(item.metadata),
                 "attached_to_record_id": item.event_id,
@@ -604,7 +604,7 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             id=item.id,
             memory_type="entity",
             text=item.name,
-            source_refs=[],
+            source_refs=_convert_source_refs(item.source_refs),
             metadata={
                 **dict(item.metadata),
                 "entity_type": item.entity_type,
@@ -622,7 +622,7 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             id=item.id,
             memory_type="property",
             text=item.content,
-            source_refs=[],
+            source_refs=_convert_source_refs(item.source_refs),
             metadata={
                 **dict(item.metadata),
                 "attached_to_record_id": item.entity_id,
@@ -638,7 +638,7 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             id=item.id,
             memory_type="link",
             text=f"{item.from_ref.object_type} {item.relation_type} {item.to_ref.object_type}",
-            source_refs=[],
+            source_refs=_convert_source_refs(item.source_refs),
             metadata={
                 **dict(item.metadata),
                 "from_type": item.from_ref.object_type,
@@ -654,7 +654,7 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             id=item.id,
             memory_type="time_ref",
             text=item.raw_text,
-            source_refs=[],
+            source_refs=_convert_source_refs(item.source_refs),
             metadata={
                 **dict(item.metadata),
                 "raw_text": item.raw_text,
@@ -677,7 +677,7 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             id=item.id,
             memory_type="time_link",
             text=f"{item.target_ref.object_type} {item.time_role} time_ref",
-            source_refs=[],
+            source_refs=_convert_source_refs(item.source_refs),
             metadata={
                 **dict(item.metadata),
                 "target_type": item.target_ref.object_type,
@@ -688,3 +688,41 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
             },
         )
     return None
+
+
+def _convert_source_refs(
+    refs: list[object],
+) -> list[object]:
+    """Convert PersistentSourceRef list to MemorySourceRef list.
+
+    Accepts both PersistentSourceRef objects and raw dicts (for InMemory
+    paths that store source_refs as dicts in metadata).
+    """
+    from ..models import MemorySourceRef
+    from ..persistence.models import PersistentSourceRef
+
+    result: list[object] = []
+    for ref in refs:
+        if isinstance(ref, PersistentSourceRef):
+            result.append(
+                MemorySourceRef(
+                    source_type=ref.source_type,
+                    source_id=ref.source_id,
+                    quote=ref.quote,
+                    span_start=ref.span_start,
+                    span_end=ref.span_end,
+                    metadata=dict(ref.metadata),
+                )
+            )
+        elif isinstance(ref, dict):
+            result.append(
+                MemorySourceRef(
+                    source_type=str(ref.get("source_type", "")),
+                    source_id=str(ref.get("source_id", "")),
+                    quote=ref.get("quote") if isinstance(ref.get("quote"), str) else None,
+                    span_start=ref.get("span_start") if isinstance(ref.get("span_start"), int) else None,
+                    span_end=ref.get("span_end") if isinstance(ref.get("span_end"), int) else None,
+                    metadata=dict(ref.get("metadata") or {}),
+                )
+            )
+    return result

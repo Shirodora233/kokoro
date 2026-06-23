@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from typing import Any, Sequence
 
 from pgvector.psycopg import register_vector
@@ -122,6 +123,19 @@ class MemoryEmbeddingService:
             register_vector(connection)
         except TypeError:
             pass
+        except Exception:
+            LOGGER.warning(
+                "Failed to register pgvector adapter; skipping embedding storage",
+                exc_info=True,
+            )
+            try:
+                connection.rollback()
+            except Exception:
+                LOGGER.warning(
+                    "Failed to roll back after pgvector adapter registration error",
+                    exc_info=True,
+                )
+            return
 
         for start in range(0, len(objects), self.batch_size):
             chunk = objects[start : start + self.batch_size]
@@ -143,20 +157,34 @@ class MemoryEmbeddingService:
                 embedding = vectors[i] if i < len(vectors) else None
                 if embedding is None:
                     continue
-                try:
-                    connection.execute(
-                        """
-                        INSERT INTO memory_object_embeddings
-                            (object_id, embedding, model, searchable_text)
-                        VALUES (%s, %s::vector, %s, %s)
-                        ON CONFLICT (object_id) DO UPDATE SET
-                            embedding = EXCLUDED.embedding,
-                            model = EXCLUDED.model,
-                            searchable_text = EXCLUDED.searchable_text,
-                            generated_at = NOW()
-                        """,
-                        (obj_id, embedding, self.model, texts[i]),
+                if len(embedding) != self.dimensions:
+                    LOGGER.warning(
+                        "Embedding dimension mismatch for object %s: "
+                        "got %d, expected %d",
+                        obj_id,
+                        len(embedding),
+                        self.dimensions,
                     )
+                    continue
+                savepoint = (
+                    connection.transaction()
+                    if hasattr(connection, "transaction")
+                    else nullcontext()
+                )
+                try:
+                    with savepoint:
+                        connection.execute(
+                            """
+                            INSERT INTO memory_object_embeddings
+                                (object_id, embedding, model, searchable_text)
+                            VALUES (%s, %s::vector, %s, %s)
+                            ON CONFLICT (object_id, model) DO UPDATE SET
+                                embedding = EXCLUDED.embedding,
+                                searchable_text = EXCLUDED.searchable_text,
+                                generated_at = NOW()
+                            """,
+                            (obj_id, embedding, self.model, texts[i]),
+                        )
                 except Exception:
                     LOGGER.warning(
                         "Failed to store embedding for object %s",
@@ -172,7 +200,7 @@ class MemoryEmbeddingService:
         self,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Return objects that don't yet have embeddings."""
+        """Return objects that don't yet have embeddings for the current model."""
         import psycopg
 
         with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
@@ -180,14 +208,15 @@ class MemoryEmbeddingService:
                 """
                 SELECT o.id, o.object_type
                 FROM memory_objects o
-                LEFT JOIN memory_object_embeddings e ON e.object_id = o.id
+                LEFT JOIN memory_object_embeddings e
+                       ON e.object_id = o.id AND e.model = %s
                 WHERE o.status = 'active'
                   AND o.object_type = ANY(%s)
                   AND e.object_id IS NULL
                 ORDER BY o.updated_at DESC
                 LIMIT %s
                 """,
-                (list(_EMBEDDABLE_TYPES), limit),
+                (self.model, list(_EMBEDDABLE_TYPES), limit),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -205,19 +234,20 @@ class MemoryEmbeddingService:
 
         # Single connection for the whole backfill batch
         with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
-            # Find objects without embeddings
+            # Find objects without embeddings for the current model
             rows = conn.execute(
                 """
                 SELECT o.id, o.object_type
                 FROM memory_objects o
-                LEFT JOIN memory_object_embeddings e ON e.object_id = o.id
+                LEFT JOIN memory_object_embeddings e
+                       ON e.object_id = o.id AND e.model = %s
                 WHERE o.status = 'active'
                   AND o.object_type = ANY(%s)
                   AND e.object_id IS NULL
                 ORDER BY o.updated_at DESC
                 LIMIT %s
                 """,
-                (list(_EMBEDDABLE_TYPES), limit),
+                (self.model, list(_EMBEDDABLE_TYPES), limit),
             ).fetchall()
 
             if not rows:

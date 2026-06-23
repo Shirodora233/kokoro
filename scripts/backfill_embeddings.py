@@ -93,7 +93,7 @@ def main() -> None:
     )
 
     while limit_remaining > 0:
-        chunk_limit = min(batch_size, limit_remaining)
+        chunk_limit = min(args.batch_size, limit_remaining)
         count = service.backfill_batch(limit=chunk_limit)
         if count == 0:
             LOGGER.info("No more objects without embeddings — backfill complete")

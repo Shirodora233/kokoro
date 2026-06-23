@@ -113,12 +113,39 @@ class MemoryObjectRef:
 
 
 @dataclass(frozen=True)
+class SearchQuery:
+    """Structured query for memory search with weighted components.
+
+    Separates the user's current intent from extracted candidate hints
+    and active-context continuity hints, so search implementations can
+    apply different matching strategies and weights per component.
+    """
+
+    primary: str = ""
+    candidate_hints: list[str] = field(default_factory=list)
+    context_hints: list[str] = field(default_factory=list)
+
+    def to_flat_text(self) -> str:
+        """Concatenate all components into a single query string."""
+        parts: list[str] = []
+        if self.primary.strip():
+            parts.append(self.primary.strip())
+        parts.extend(hint.strip() for hint in self.candidate_hints if hint.strip())
+        parts.extend(hint.strip() for hint in self.context_hints if hint.strip())
+        return " ".join(parts)
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class MemorySearchRequest:
     """Request for the one search snapshot shared by a memory turn."""
 
     user_id: str | None = None
     session_id: str | None = None
     query: str | None = None
+    structured_query: SearchQuery | None = None
     timezone: str | None = None
     candidates: list[MemoryRecord] = field(default_factory=list)
     active_memory_context: "ActiveMemoryContext | None" = None
@@ -164,10 +191,15 @@ class ActiveMemoryContext:
     property_memories: list[MemoryRecord] = field(default_factory=list)
     other_memories: list[MemoryRecord] = field(default_factory=list)
     last_refreshed_at_message_id: str | None = None
+    last_refreshed_at_ts: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        # Convert ts to string for JSON serialization
+        if self.last_refreshed_at_ts > 0:
+            result["last_refreshed_at_ts"] = self.last_refreshed_at_ts
+        return result
 
 
 @dataclass(frozen=True)

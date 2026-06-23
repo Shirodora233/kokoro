@@ -52,6 +52,18 @@ docker run -d --name kokoro-postgres \
   postgres:16
 ```
 
+如果要开启 embedding / hybrid vector search，请使用带 pgvector 扩展的镜像，例如：
+
+```bash
+docker run -d --name kokoro-postgres \
+  -e POSTGRES_USER=kokoro \
+  -e POSTGRES_PASSWORD=<strong-password> \
+  -e POSTGRES_DB=kokoro \
+  -p 127.0.0.1:54330:5432 \
+  -v kokoro-postgres-data:/var/lib/postgresql/data \
+  pgvector/pgvector:pg16
+```
+
 从 JSON 表迁移到 PostgreSQL：
 
 ```bash

@@ -60,7 +60,8 @@ class NormalizedMemoryContextRenderer:
         view: NormalizedEventMemoryView,
     ) -> NormalizedSelectedMemoryView:
         event = view.event
-        lines = [f"Event: {event.title}"]
+        provenance = _provenance_line(event.confidence, event.importance, None)
+        lines = [f"Event: {event.title}{provenance}"]
         if event.summary and event.summary != event.title:
             lines.append(f"  Summary: {event.summary}")
         detail_lines = _unique_texts(
@@ -76,6 +77,9 @@ class NormalizedMemoryContextRenderer:
                 "  Entities: "
                 + ", ".join(_unique_texts(entity.name for entity in view.entities)[:5])
             )
+        source_line = _source_line(event.source_refs)
+        if source_line:
+            lines.append(source_line)
         text = "\n".join(lines)
         return NormalizedSelectedMemoryView(
             kind="event",
@@ -99,6 +103,8 @@ class NormalizedMemoryContextRenderer:
                     "description_ids": _ids(item.id for item in view.descriptions),
                     "entity_ids": _ids(item.id for item in view.entities),
                     "time_ref_ids": _ids(time_ref.id for _, time_ref in view.time_refs),
+                    "confidence": event.confidence,
+                    "importance": event.importance,
                 },
             ),
             lines=lines,
@@ -109,7 +115,8 @@ class NormalizedMemoryContextRenderer:
         view: NormalizedEntityMemoryView,
     ) -> NormalizedSelectedMemoryView:
         entity = view.entity
-        lines = [f"Entity: {entity.name} ({entity.entity_type})"]
+        provenance = _provenance_line(entity.confidence, entity.importance, None)
+        lines = [f"Entity: {entity.name} ({entity.entity_type}){provenance}"]
         if entity.identity_summary:
             lines.append(f"  Identity: {entity.identity_summary}")
         if entity.aliases:
@@ -125,6 +132,9 @@ class NormalizedMemoryContextRenderer:
         time_lines = _time_lines(view.time_refs)
         if time_lines:
             lines.append("  Time: " + "; ".join(time_lines[:3]))
+        source_line = _source_line(entity.source_refs)
+        if source_line:
+            lines.append(source_line)
         text = "\n".join(lines)
         return NormalizedSelectedMemoryView(
             kind="entity",
@@ -142,6 +152,8 @@ class NormalizedMemoryContextRenderer:
                     "aliases": entity.aliases,
                     "property_ids": _ids(item.id for item in view.properties),
                     "event_ids": _ids(item.id for item in view.events),
+                    "confidence": entity.confidence,
+                    "importance": entity.importance,
                 },
             ),
             lines=lines,
@@ -153,7 +165,14 @@ class NormalizedMemoryContextRenderer:
     ) -> list[MemoryContextBlock]:
         if not selected:
             return []
-        lines = ["Relevant memories:"]
+        preamble = (
+            "Relevant memories, may be incomplete or outdated. "
+            "Use only when relevant to the user's current message; "
+            "the user's latest statement overrides any conflicting memory. "
+            "If a memory appears stale or contradicts what the user just said, "
+            "trust the user and note the discrepancy."
+        )
+        lines = [preamble, ""]
         for index, view in enumerate(selected, start=1):
             if index > 1:
                 lines.append("")
@@ -193,6 +212,44 @@ def _time_text(time_ref: PersistentTimeRef) -> str:
         or time_ref.recurrence_text
         or ""
     )
+
+
+def _provenance_line(
+    confidence: str | None,
+    importance: str | None,
+    created_at: str | None,
+) -> str:
+    """Build an inline provenance tag for a memory line.
+
+    Example: ' [confidence=high, importance=medium]'
+    """
+    tags: list[str] = []
+    if confidence:
+        tags.append(f"confidence={confidence}")
+    if importance:
+        tags.append(f"importance={importance}")
+    if not tags:
+        return ""
+    return " [" + ", ".join(tags) + "]"
+
+
+def _source_line(
+    source_refs: Sequence[PersistentSourceRef],
+) -> str:
+    """Build a short source attribution line.
+
+    Example: '  Source: message msg_abc123 ("the exact quote...")'
+    """
+    if not source_refs:
+        return ""
+    ref = source_refs[0]
+    parts = [f"  Source: {ref.source_type} {ref.source_id}"]
+    if ref.quote and ref.quote.strip():
+        quote = ref.quote.strip()
+        if len(quote) > 120:
+            quote = quote[:120] + "..."
+        parts.append(f' ("{quote}")')
+    return "".join(parts)
 
 
 def _source_refs(

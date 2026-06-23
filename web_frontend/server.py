@@ -227,11 +227,13 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                 if username:
                     user = self.service.create_user(username)
                     user_id = user.id
+                do_not_remember = self._optional_bool(payload, "do_not_remember")
                 user_message, assistant_message = self.service.send_message(
                     session_id=session_id,
                     content=content,
                     user_id=user_id,
                     idempotency_key=self._optional_text(payload, "idempotency_key"),
+                    do_not_remember=do_not_remember,
                 )
                 response = {
                     "user_message": user_message.to_record(),
@@ -247,6 +249,24 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                         trace.get("trace_id") if trace else None
                     )
                 return response
+
+        # --- User-facing memory management ---
+        if method == "GET" and path == "/api/memories":
+            return self.service.list_memories(
+                username=self._query_one(query, "username"),
+                user_id=self._query_one(query, "user_id"),
+                session_id=self._query_one(query, "session_id"),
+                memory_type=self._query_one(query, "type"),
+                limit=self._query_int(query, "limit", 100),
+            )
+
+        if method == "GET" and path.startswith("/api/memories/"):
+            memory_id = unquote(path.removeprefix("/api/memories/"))
+            return self.service.get_memory_detail(memory_id)
+
+        if method == "DELETE" and path.startswith("/api/memories/"):
+            memory_id = unquote(path.removeprefix("/api/memories/"))
+            return self.service.forget_memory(memory_id)
 
         checkpoint_prefix = "/api/checkpoints/"
         if path.startswith(checkpoint_prefix):
@@ -363,6 +383,14 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
             return None
         text = str(value).strip()
         return text or None
+
+    def _optional_bool(self, payload: dict[str, Any], key: str) -> bool:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:

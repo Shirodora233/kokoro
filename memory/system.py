@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time as _time
 from dataclasses import replace
 from typing import Sequence
 
@@ -94,7 +95,11 @@ class MemoryRuntime(MemorySystem):
         )
         enriched_turn = replace(turn, active_memory_context=active_context)
 
-        candidate_records = list(self.extractor.extract(enriched_turn))
+        skip_extraction = bool(enriched_turn.metadata.get("memory_skip_extraction"))
+        if skip_extraction:
+            candidate_records: list[MemoryRecord] = []
+        else:
+            candidate_records = list(self.extractor.extract(enriched_turn))
         self._record_external_extraction_if_needed(
             trace_id=trace_id,
             turn=enriched_turn,
@@ -105,10 +110,14 @@ class MemoryRuntime(MemorySystem):
             for record in candidate_records
         ]
 
+        structured_query = self._search_query(
+            enriched_turn, scoped_records, active_context
+        )
         search_request = MemorySearchRequest(
             user_id=turn.user_id,
             session_id=turn.session_id,
-            query=self._search_query(enriched_turn, scoped_records, active_context),
+            query=structured_query.to_flat_text(),
+            structured_query=structured_query,
             timezone=turn.timezone,
             candidates=scoped_records,
             active_memory_context=active_context,
@@ -119,7 +128,9 @@ class MemoryRuntime(MemorySystem):
                 "debug_trace_id": trace_id,
             },
         )
+        t0 = _time.time()
         search_result = self.context_retriever.search(search_request)
+        search_latency_ms = round((_time.time() - t0) * 1000)
         retrieval_request = MemoryRetrievalRequest(
             user_id=turn.user_id,
             session_id=turn.session_id,
@@ -160,7 +171,7 @@ class MemoryRuntime(MemorySystem):
                 "source": "prepare_turn",
                 "debug_trace_id": trace_id,
                 "candidate_count": len(scoped_records),
-                "search": search_result.metadata,
+                "search": {**search_result.metadata, "latency_ms": search_latency_ms},
                 "retrieval": retrieval_result.metadata,
             },
         )
@@ -331,14 +342,27 @@ class MemoryRuntime(MemorySystem):
         turn: MemoryTurnInput,
         candidates: Sequence[MemoryRecord],
         active_context: ActiveMemoryContext,
-    ) -> str:
-        parts = [turn.new_message.content]
-        parts.extend(record.text for record in candidates if record.text)
-        parts.extend(record.text for record in active_context.event_memories)
-        parts.extend(record.text for record in active_context.entity_memories)
-        parts.extend(record.text for record in active_context.property_memories)
-        parts.extend(record.text for record in active_context.other_memories)
-        return " ".join(part.strip() for part in parts if part and part.strip())
+    ) -> "SearchQuery":
+        from .models import SearchQuery
+
+        return SearchQuery(
+            primary=turn.new_message.content.strip(),
+            candidate_hints=[
+                record.text.strip()
+                for record in candidates
+                if record.text and record.text.strip()
+            ],
+            context_hints=[
+                record.text.strip()
+                for record in [
+                    *active_context.event_memories,
+                    *active_context.entity_memories,
+                    *active_context.property_memories,
+                    *active_context.other_memories,
+                ]
+                if record.text and record.text.strip()
+            ],
+        )
 
     def _retrieved_active_records(
         self,
@@ -386,6 +410,13 @@ class MemoryRuntime(MemorySystem):
     ) -> None:
         if self.debug_recorder is None:
             return
+        metrics = _retrieval_metrics(search_result)
+        debug_metadata = {
+            "context_retriever": self.context_retriever.__class__.__name__,
+            "search_hit_count": len(search_result.hits),
+            "memory_context_count": len(retrieval_result.memory_context),
+            **metrics,
+        }
         self.debug_recorder.record_retrieval(
             trace_id,
             active_memory_context=active_context,
@@ -394,11 +425,7 @@ class MemoryRuntime(MemorySystem):
             search_result=search_result,
             retrieval_request=retrieval_request,
             retrieval_result=retrieval_result,
-            metadata={
-                "context_retriever": self.context_retriever.__class__.__name__,
-                "search_hit_count": len(search_result.hits),
-                "memory_context_count": len(retrieval_result.memory_context),
-            },
+            metadata=debug_metadata,
         )
 
     def _record_write_debug(
@@ -420,3 +447,34 @@ class MemoryRuntime(MemorySystem):
                 "write_operation_count": len(write_plan.operations),
             },
         )
+
+
+def _retrieval_metrics(search_result: Any) -> dict[str, Any]:
+    """Extract observability metrics from a search result."""
+    metrics: dict[str, Any] = {}
+    sm = getattr(search_result, "metadata", None) or {}
+    # Strategy / source
+    metrics["search_strategy"] = sm.get("strategy", "unknown")
+    # Hit counts
+    metrics["raw_lexical_count"] = sm.get("raw_lexical_count")
+    metrics["raw_vector_count"] = sm.get("raw_vector_count")
+    metrics["fused_count"] = sm.get("fused_count")
+    # Vector distance distribution from hits that have it
+    distances: list[float] = []
+    hits = getattr(search_result, "hits", []) or []
+    for hit in hits:
+        h_meta = getattr(hit, "metadata", {}) or {}
+        score = getattr(hit, "score", 0.0)
+        reason = getattr(hit, "reason", "")
+        if reason == "vector_similarity":
+            distances.append(score)
+    if distances:
+        metrics["vector_score_min"] = round(min(distances), 4)
+        metrics["vector_score_max"] = round(max(distances), 4)
+        metrics["vector_score_mean"] = round(
+            sum(distances) / len(distances), 4
+        )
+    metrics["vector_hit_count"] = len(distances)
+    # Embedding coverage: count hits that came from embedding pathway
+    metrics["has_embedding_hits"] = len(distances) > 0
+    return metrics

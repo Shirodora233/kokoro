@@ -198,6 +198,7 @@ def test_embed_bundle_calls_client() -> None:
         embedding_client=stub,
         database_url="postgresql://test:test@localhost/test",
         model="test-model",
+        dimensions=4,
     )
 
     # Build a minimal bundle
@@ -250,6 +251,7 @@ def test_embed_bundle_skips_empty() -> None:
     service = MemoryEmbeddingService(
         embedding_client=stub,
         database_url="postgresql://test:test@localhost/test",
+        dimensions=4,
     )
 
     from memory.persistence.models import PersistentMemoryBundle

@@ -52,6 +52,7 @@ class PostgresHybridMemorySearch:
         fusion_method: str = "rrf",
         vector_weight: float = 0.6,
         per_table_limit: int = 20,
+        min_similarity: float = 0.7,
         ranker: NormalizedMemoryRanker | None = None,
     ) -> None:
         self.repository = repository
@@ -63,6 +64,7 @@ class PostgresHybridMemorySearch:
         self.fusion_method = fusion_method
         self.vector_weight = vector_weight
         self.per_table_limit = per_table_limit
+        self.min_similarity = min_similarity
         self.ranker = ranker or NormalizedMemoryRanker()
 
     def search(self, request: MemorySearchRequest) -> MemorySearchResult:
@@ -175,6 +177,7 @@ class PostgresHybridMemorySearch:
                 1.0 - (e.embedding <=> %s::vector) AS vector_score
             FROM memory_object_embeddings e
             JOIN memory_objects o ON o.id = e.object_id
+            LEFT JOIN conversation_checkpoints cp ON cp.id = o.created_checkpoint_id
             WHERE {where_sql}
             ORDER BY e.embedding <=> %s::vector
             LIMIT %s
@@ -186,23 +189,34 @@ class PostgresHybridMemorySearch:
                 sql,
                 (
                     query_vector,
-                    query_vector,
                     *params,
+                    query_vector,
                     per_table_limit,
                 ),
             ).fetchall()
 
         terms = search_terms_from_query(query)
         hits: list[MemorySearchHit] = []
+        dropped_below_threshold = 0
         for row in rows:
+            similarity = float(row.get("vector_score", 0.0))
+            if similarity < self.min_similarity:
+                dropped_below_threshold += 1
+                continue
             hit = row_to_search_hit(
                 row,
-                score=float(row.get("vector_score", 0.5)),
+                score=round(similarity, 4),
                 reason="vector_similarity",
-                match_quality="term",
+                match_quality="semantic",
                 terms=terms,
             )
             hits.append(hit)
+        if dropped_below_threshold:
+            LOGGER.debug(
+                "Vector search dropped %d hits below similarity %.2f",
+                dropped_below_threshold,
+                self.min_similarity,
+            )
         return hits
 
     # ------------------------------------------------------------------

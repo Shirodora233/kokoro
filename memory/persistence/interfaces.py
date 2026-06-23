@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from .models import (
     PersistentObjectRef,
@@ -77,6 +77,7 @@ class PersistentMemoryRepository(Protocol):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentDescription]:
         """List active descriptions by parent event or scope."""
 
@@ -86,6 +87,7 @@ class PersistentMemoryRepository(Protocol):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentProperty]:
         """List active properties by parent entity or scope."""
 
@@ -94,6 +96,8 @@ class PersistentMemoryRepository(Protocol):
         object_refs: Sequence[PersistentObjectRef] | None = None,
         user_id: str | None = None,
         limit: int | None = None,
+        session_id: str | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentLink]:
         """List active links touching the given objects."""
 
@@ -101,6 +105,9 @@ class PersistentMemoryRepository(Protocol):
         self,
         target_refs: Sequence[PersistentObjectRef] | None = None,
         limit: int | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        visible_session_scopes: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[PersistentTimeLink]:
         """List time links for the given target objects."""
 
@@ -109,3 +116,28 @@ class PersistentMemoryRepository(Protocol):
         time_ref_ids: Sequence[str],
     ) -> list[PersistentTimeRef]:
         """Load semantic time references by id."""
+
+    def tombstone_by_session_id(
+        self,
+        session_id: str,
+        *,
+        deleted_reason: str = "session_deleted",
+    ) -> int:
+        """Soft-delete (tombstone) all active memory objects for a session.
+
+        Returns count of objects tombstoned.
+        """
+
+    def tombstone_by_user_id(
+        self,
+        user_id: str,
+        *,
+        deleted_reason: str = "user_deleted",
+    ) -> int:
+        """Soft-delete (tombstone) all active memory objects for a user.
+
+        Returns count of objects tombstoned.
+        """
+
+    def delete_all_memory(self) -> dict[str, int]:
+        """Hard-delete all memory objects, embeddings, and source refs."""

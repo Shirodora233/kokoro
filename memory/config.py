@@ -57,6 +57,10 @@ class MemoryRuntimeConfig:
     embedding_search_enabled: bool = False
     embedding_fusion_method: str = "rrf"
     embedding_vector_weight: float = 0.6
+    embedding_min_similarity: float = 0.7
+    search_min_term_length: int = 2
+    search_require_all_terms: bool = False
+    search_use_trigram: bool = True
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> "MemoryRuntimeConfig":
@@ -108,6 +112,18 @@ class MemoryRuntimeConfig:
         embedding_vector_weight = float(
             read("MEMORY_EMBEDDING_VECTOR_WEIGHT", "0.6") or "0.6"
         )
+        embedding_min_similarity = float(
+            read("MEMORY_EMBEDDING_MIN_SIMILARITY", "0.7") or "0.7"
+        )
+        search_min_term_length = int(
+            read("MEMORY_SEARCH_MIN_TERM_LENGTH", "2") or "2"
+        )
+        search_require_all_terms = _parse_bool(
+            read("MEMORY_SEARCH_REQUIRE_ALL_TERMS"), default=False
+        )
+        search_use_trigram = _parse_bool(
+            read("MEMORY_SEARCH_USE_TRIGRAM"), default=True
+        )
         return cls(
             extraction_enabled=enabled,
             extraction_model=model,
@@ -127,4 +143,8 @@ class MemoryRuntimeConfig:
             embedding_search_enabled=embedding_search_enabled,
             embedding_fusion_method=embedding_fusion_method,
             embedding_vector_weight=embedding_vector_weight,
+            embedding_min_similarity=embedding_min_similarity,
+            search_min_term_length=search_min_term_length,
+            search_require_all_terms=search_require_all_terms,
+            search_use_trigram=search_use_trigram,
         )
