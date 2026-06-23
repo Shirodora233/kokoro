@@ -7,6 +7,9 @@ const state = {
   turnDebug: [],
   turnDebugByUserMessageId: new Map(),
   traceDetailsById: new Map(),
+  processNodeOpen: new Set(),
+  liveProcess: null,
+  liveProcessTimer: null,
   checkpointMemoryById: new Map(),
   selectedUsername: localStorage.getItem("kokoro.selectedUsername") || "",
   selectedSessionId: localStorage.getItem("kokoro.selectedSessionId") || "",
@@ -209,10 +212,13 @@ function renderSessions() {
     }
     row.querySelector(".item-meta").textContent = metaParts.join(" · ");
     row.querySelector(".session-select").addEventListener("click", async () => {
+      if (state.selectedSessionId !== session.id) {
+        resetSessionDebugState();
+      }
       state.selectedSessionId = session.id;
       persistSelection();
       renderSessions();
-      await loadMessages();
+      await loadMessages({ stickToBottom: true });
     });
     row.querySelector(".edit-session-btn").addEventListener("click", () => {
       openEditSessionDialog(session);
@@ -226,7 +232,8 @@ function renderSessions() {
   updateControls();
 }
 
-function renderMessages() {
+function renderMessages(options = {}) {
+  const stickToBottom = options.stickToBottom ?? isChatNearBottom();
   els.chatLog.innerHTML = "";
   renderHeader();
   const session = selectedSession();
@@ -260,6 +267,8 @@ function renderMessages() {
       const debug = state.turnDebugByUserMessageId.get(message.id);
       if (debug) {
         els.chatLog.append(processDebugCard(debug));
+      } else if (message.id === "pending" && state.liveProcess) {
+        els.chatLog.append(liveProcessCard(state.liveProcess));
       }
     }
     if (message.role === "assistant") {
@@ -269,7 +278,14 @@ function renderMessages() {
       }
     }
   });
-  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  if (stickToBottom) {
+    els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  }
+}
+
+function isChatNearBottom() {
+  const distance = els.chatLog.scrollHeight - els.chatLog.scrollTop - els.chatLog.clientHeight;
+  return distance < 80;
 }
 
 function processDebugCard(debug) {
@@ -339,6 +355,48 @@ async function loadTraceDetails(traceId, container) {
 
 function renderTraceDetails(container, trace) {
   container.innerHTML = "";
+  container.append(...traceDetailSections(trace));
+}
+
+function traceDetailSections(trace) {
+  if (!hasTraceData(trace)) {
+    return [];
+  }
+  return [
+    ...memoryProcessSections(trace),
+    developerDetailsSection(trace),
+  ];
+}
+
+function hasTraceData(trace) {
+  return Boolean(trace?.extraction || trace?.retrieval || trace?.write);
+}
+
+function memoryProcessSections(trace) {
+  const tree = buildMemoryProcessTree(trace);
+  const sections = [
+    processTreeSection("Entities", tree.entities),
+    processTreeSection("Events", tree.events),
+  ];
+  if (tree.other.length) {
+    sections.push(processTreeSection("Other", tree.other));
+  }
+  if (tree.merged.length) {
+    sections.push(processTreeSection("Merged", tree.merged));
+  }
+  return sections;
+}
+
+function developerDetailsSection(trace) {
+  const details = document.createElement("details");
+  details.className = "developer-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "Developer details";
+  details.append(summary, ...rawTraceSections(trace));
+  return details;
+}
+
+function rawTraceSections(trace) {
   const extraction = trace?.extraction || {};
   const retrieval = trace?.retrieval || {};
   const write = trace?.write || {};
@@ -347,7 +405,7 @@ function renderTraceDetails(container, trace) {
   const writePlan = write.write_plan || {};
   const writeResult = write.write_result || {};
 
-  container.append(
+  return [
     debugSection(
       "Extracted candidates",
       extraction.normalized_records || [],
@@ -383,7 +441,456 @@ function renderTraceDetails(container, trace) {
       writeResultRows(writeResult),
       (row) => row,
     ),
+  ];
+}
+
+function buildMemoryProcessTree(trace) {
+  const records = trace?.extraction?.normalized_records || [];
+  const operations = trace?.write?.write_plan?.operations || [];
+  const opIndex = buildOperationIndex(operations);
+  const byId = new Map();
+  const attached = new Set();
+
+  records.forEach((record) => {
+    const id = recordCandidateId(record);
+    if (id) {
+      byId.set(id, record);
+    }
+  });
+
+  const links = records.filter((record) => record.memory_type === "link");
+  const timeLinks = records.filter((record) => record.memory_type === "time_link");
+  const timeById = new Map(
+    records
+      .filter((record) => record.memory_type === "time_ref")
+      .map((record) => [recordCandidateId(record), record])
+      .filter(([id]) => Boolean(id)),
   );
+  const propertiesByEntity = groupChildRecords(
+    records,
+    links,
+    "property",
+    "entity_client_id",
+    "entity",
+    "property",
+  );
+  const descriptionsByEvent = groupChildRecords(
+    records,
+    links,
+    "description",
+    "event_client_id",
+    "event",
+    "description",
+  );
+  const involvedByEvent = groupInvolvedEntities(records, links, opIndex);
+  const eventsByEntity = groupEventsByEntity(
+    records,
+    links,
+    opIndex,
+    timeLinks,
+    timeById,
+  );
+
+  const entities = records
+    .filter((record) => record.memory_type === "entity")
+    .map((record) => {
+      const id = recordCandidateId(record);
+      const children = [
+        ...(propertiesByEntity.get(id) || []).map((property) => {
+          attached.add(recordCandidateId(property));
+          return nodeForRecord(
+            property,
+            opIndex,
+            [],
+            null,
+            timeMetaForTarget(recordCandidateId(property), timeLinks, timeById, attached),
+          );
+        }),
+        ...(eventsByEntity.get(id) || []),
+      ];
+      const node = nodeForRecord(
+        record,
+        opIndex,
+        children,
+        null,
+        timeMetaForTarget(id, timeLinks, timeById, attached),
+      );
+      node.label = displayRecordText(record);
+      return node;
+    });
+
+  const events = records
+    .filter((record) => record.memory_type === "event")
+    .map((record) => {
+      const id = recordCandidateId(record);
+      const children = [
+        ...(descriptionsByEvent.get(id) || []).map((description) => {
+          attached.add(recordCandidateId(description));
+          return nodeForRecord(
+            description,
+            opIndex,
+            [],
+            null,
+            timeMetaForTarget(recordCandidateId(description), timeLinks, timeById, attached),
+          );
+        }),
+        ...(involvedByEvent.get(id) || []),
+      ];
+      const node = nodeForRecord(
+        record,
+        opIndex,
+        children,
+        null,
+        timeMetaForTarget(id, timeLinks, timeById, attached),
+      );
+      node.label = displayRecordText(record);
+      return node;
+    });
+
+  const visibleTopLevel = new Set(
+    records
+      .filter((record) => ["entity", "event"].includes(record.memory_type))
+      .map(recordCandidateId)
+      .filter(Boolean),
+  );
+  const structuralTypes = new Set(["entity", "event", "property", "description", "time_ref"]);
+  const other = records
+    .filter((record) => structuralTypes.has(record.memory_type))
+    .filter((record) => {
+      const id = recordCandidateId(record);
+      return id && !visibleTopLevel.has(id) && !attached.has(id);
+    })
+    .map((record) => nodeForRecord(record, opIndex));
+
+  return {
+    entities,
+    events,
+    other,
+    merged: mergeNodes(operations, byId),
+  };
+}
+
+function buildOperationIndex(operations) {
+  const byCandidateId = new Map();
+  const byTypeAndText = new Map();
+  (operations || []).forEach((operation) => {
+    if (operation.candidate_id) {
+      byCandidateId.set(operation.candidate_id, operation);
+    }
+    if (operation.candidate_type || operation.candidate_text) {
+      byTypeAndText.set(
+        `${operation.candidate_type || ""}\n${operation.candidate_text || ""}`,
+        operation,
+      );
+    }
+  });
+  return { byCandidateId, byTypeAndText };
+}
+
+function groupChildRecords(records, links, childType, metadataKey, parentType, linkChildType) {
+  const grouped = new Map();
+  records
+    .filter((record) => record.memory_type === childType)
+    .forEach((record) => {
+      const parentId = record.metadata?.[metadataKey];
+      if (parentId) {
+        pushGrouped(grouped, parentId, record);
+      }
+    });
+  links.forEach((link) => {
+    const metadata = link.metadata || {};
+    if (metadata.from_type === parentType && metadata.to_type === linkChildType) {
+      const child = records.find((record) => recordCandidateId(record) === metadata.to_client_id);
+      if (child) {
+        pushGrouped(grouped, metadata.from_client_id, child);
+      }
+    }
+  });
+  return grouped;
+}
+
+function groupInvolvedEntities(records, links, opIndex) {
+  const grouped = new Map();
+  links.forEach((link) => {
+    const metadata = link.metadata || {};
+    if (
+      metadata.from_type !== "event" ||
+      metadata.to_type !== "entity" ||
+      metadata.relation_type !== "involves"
+    ) {
+      return;
+    }
+    const entity = records.find((record) => recordCandidateId(record) === metadata.to_client_id);
+    if (!entity) {
+      return;
+    }
+    pushGrouped(grouped, metadata.from_client_id, {
+      label: `entity · ${displayRecordText(entity)}`,
+      key: `relation:${metadata.from_client_id}:involves:${metadata.to_client_id}`,
+      meta: "",
+      badges: badgesForRecord(entity, opIndex),
+      children: [],
+    });
+  });
+  return grouped;
+}
+
+function groupEventsByEntity(records, links, opIndex, timeLinks, timeById) {
+  const grouped = new Map();
+  links.forEach((link) => {
+    const metadata = link.metadata || {};
+    if (
+      metadata.from_type !== "event" ||
+      metadata.to_type !== "entity" ||
+      metadata.relation_type !== "involves"
+    ) {
+      return;
+    }
+    const event = records.find((record) => recordCandidateId(record) === metadata.from_client_id);
+    if (!event) {
+      return;
+    }
+    pushGrouped(grouped, metadata.to_client_id, {
+      label: `event · ${displayRecordText(event)}`,
+      key: `relation:${metadata.to_client_id}:event:${metadata.from_client_id}`,
+      meta: timeMetaForTarget(metadata.from_client_id, timeLinks, timeById),
+      badges: badgesForRecord(event, opIndex),
+      children: [],
+    });
+  });
+  return grouped;
+}
+
+function pushGrouped(grouped, key, value) {
+  if (!key) return;
+  if (!grouped.has(key)) {
+    grouped.set(key, []);
+  }
+  const values = grouped.get(key);
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+}
+
+function timeMetaForTarget(targetId, timeLinks, timeById, attached = null) {
+  if (!targetId) return "";
+  const labels = timeLinks
+    .filter((link) => link.metadata?.target_client_id === targetId)
+    .map((link) => {
+      const time = timeById.get(link.metadata?.time_ref_client_id);
+      if (!time) {
+        return null;
+      }
+      if (attached) {
+        attached.add(recordCandidateId(time));
+      }
+      return displayTimeText(time);
+    })
+    .filter(Boolean);
+  return uniqueValues(labels).join(", ");
+}
+
+function nodeForRecord(record, opIndex, children = [], fallbackOperation = null, meta = "") {
+  return {
+    label: `${typeLabel(record.memory_type)} · ${displayRecordText(record)}`,
+    key: `record:${record.memory_type || "memory"}:${recordCandidateId(record) || displayRecordText(record)}`,
+    meta,
+    badges: badgesForRecord(record, opIndex, fallbackOperation),
+    children,
+  };
+}
+
+function uniqueValues(values) {
+  return [...new Set((values || []).filter(Boolean))];
+}
+
+function mergeNodes(operations, byId) {
+  return (operations || [])
+    .filter((operation) => operation.action === "merge" || (operation.merge_source_record_ids || []).length)
+    .map((operation) => {
+      const sources = operation.merge_source_record_ids || [];
+      const sourceText = sources
+        .map((id) => displayRecordText(byId.get(id)) || id)
+        .join(", ");
+      const targetText = operation.candidate_text || operation.existing_record_id || operation.candidate_id || "";
+      return {
+        label: sourceText ? `${sourceText} -> ${targetText}` : targetText,
+        badges: [badgeLabel("merge")],
+        children: [],
+      };
+    });
+}
+
+function operationForRecord(record, opIndex) {
+  if (!record || !opIndex) return null;
+  const candidateId = recordCandidateId(record);
+  if (candidateId && opIndex.byCandidateId.has(candidateId)) {
+    return opIndex.byCandidateId.get(candidateId);
+  }
+  return opIndex.byTypeAndText.get(`${record.memory_type || ""}\n${record.text || ""}`) || null;
+}
+
+function badgesForRecord(record, opIndex, fallbackOperation = null) {
+  const operation = operationForRecord(record, opIndex) || fallbackOperation;
+  return operation?.action ? [badgeLabel(operation.action)] : [];
+}
+
+function badgeLabel(action) {
+  return {
+    create: "new",
+    reuse: "reuse",
+    attach: "attach",
+    update: "update",
+    merge: "merge",
+    invalidate: "stale",
+    ignore: "ignored",
+    flag_conflict: "conflict",
+  }[action] || action;
+}
+
+function typeLabel(type) {
+  return {
+    entity: "entity",
+    event: "event",
+    property: "property",
+    description: "description",
+    time_ref: "time",
+  }[type] || type || "memory";
+}
+
+function recordCandidateId(record) {
+  return record?.metadata?.candidate_client_id || record?.id || "";
+}
+
+function displayRecordText(record) {
+  if (!record) return "";
+  return record.text || record.metadata?.summary || record.metadata?.raw_text || record.id || "";
+}
+
+function displayTimeText(record) {
+  if (!record) return "";
+  const metadata = record.metadata || {};
+  return metadata.raw_text
+    || metadata.description
+    || metadata.resolved_start
+    || record.text
+    || "";
+}
+
+function processTreeSection(title, nodes) {
+  const section = document.createElement("section");
+  section.className = "memory-section process-tree-section";
+  const heading = document.createElement("h3");
+  heading.textContent = `${title} (${nodes.length})`;
+  section.append(heading);
+  if (nodes.length === 0) {
+    section.append(emptyState("None"));
+    return section;
+  }
+  const list = document.createElement("div");
+  list.className = "memory-tree";
+  nodes.forEach((node) => {
+    list.append(processTreeNode(node));
+  });
+  section.append(list);
+  return section;
+}
+
+function processTreeNode(node) {
+  if (!(node.children || []).length) {
+    return processLeafNode(node);
+  }
+  const details = document.createElement("details");
+  details.className = "memory-node process-memory-node";
+  if (node.key && state.processNodeOpen.has(node.key)) {
+    details.open = true;
+  }
+  const summary = document.createElement("summary");
+  summary.className = "memory-node-summary";
+
+  const title = document.createElement("span");
+  title.className = "memory-node-title";
+  title.textContent = node.label;
+
+  const meta = document.createElement("span");
+  meta.className = "memory-node-meta";
+  appendNodeMeta(meta, node);
+
+  summary.append(title, meta);
+  details.append(summary);
+
+  const body = document.createElement("div");
+  body.className = "memory-node-body";
+  node.children.forEach((child) => {
+    if ((child.children || []).length > 0) {
+      body.append(processTreeNode(child));
+    } else {
+      body.append(processChildRow(child));
+    }
+  });
+  details.append(body);
+  details.addEventListener("toggle", () => {
+    if (!node.key) {
+      return;
+    }
+    if (details.open) {
+      state.processNodeOpen.add(node.key);
+    } else {
+      state.processNodeOpen.delete(node.key);
+    }
+  });
+  return details;
+}
+
+function processLeafNode(node) {
+  const row = document.createElement("div");
+  row.className = "memory-node process-memory-node memory-node-leaf";
+  const summary = document.createElement("div");
+  summary.className = "memory-node-summary";
+
+  const title = document.createElement("span");
+  title.className = "memory-node-title";
+  title.textContent = node.label;
+
+  const meta = document.createElement("span");
+  meta.className = "memory-node-meta";
+  appendNodeMeta(meta, node);
+
+  summary.append(title, meta);
+  row.append(summary);
+  return row;
+}
+
+function processChildRow(node) {
+  const row = document.createElement("div");
+  row.className = "memory-child-row process-child-row";
+  const text = document.createElement("span");
+  text.textContent = node.label;
+  const meta = document.createElement("span");
+  meta.className = "process-row-meta";
+  appendNodeMeta(meta, node);
+  row.append(text, meta);
+  return row;
+}
+
+function appendNodeMeta(container, node) {
+  container.textContent = "";
+  if (node.meta) {
+    const meta = document.createElement("span");
+    meta.className = "process-meta-text";
+    meta.textContent = node.meta;
+    container.append(meta);
+  }
+  appendBadges(container, node.badges);
+}
+
+function appendBadges(container, badges) {
+  (badges || []).forEach((badge) => {
+    const span = document.createElement("span");
+    span.className = `process-badge badge-${badge}`;
+    span.textContent = badge;
+    container.append(span);
+  });
 }
 
 function debugSection(title, items, formatter) {
@@ -416,6 +923,140 @@ function activeContextRecords(activeContext) {
     ...(activeContext.property_memories || []),
     ...(activeContext.other_memories || []),
   ];
+}
+
+function liveProcessCard(progress) {
+  const details = document.createElement("details");
+  details.className = "process-card live-process-card";
+  details.open = Boolean(progress.open);
+
+  const summary = document.createElement("summary");
+  summary.className = "process-summary";
+
+  const title = document.createElement("span");
+  title.className = "process-title";
+  title.textContent = "Memory process";
+
+  const meta = document.createElement("span");
+  meta.className = "process-meta";
+  meta.textContent = liveProcessSummaryText(progress);
+
+  summary.append(title, meta);
+
+  const body = document.createElement("div");
+  body.className = "process-body";
+  body.append(
+    debugSection("Process steps", liveProcessRows(progress), (row) => row),
+    ...traceDetailSections(progress.trace || {}),
+  );
+
+  details.append(summary, body);
+  details.addEventListener("toggle", () => {
+    if (state.liveProcess) {
+      state.liveProcess = {
+        ...state.liveProcess,
+        open: details.open,
+      };
+    }
+  });
+  return details;
+}
+
+function liveProcessSummaryText(progress) {
+  const current = currentLiveStep(progress);
+  return `${current.status} · ${current.label} · ${current.detail}`;
+}
+
+function currentLiveStep(progress) {
+  const trace = progress.trace || {};
+  const extraction = trace.extraction || null;
+  const retrieval = trace.retrieval || null;
+  const write = trace.write || null;
+  if (write) {
+    const operations = write.write_plan?.operations || [];
+    return {
+      status: "Done",
+      label: "Write",
+      detail: `${operations.length} operations`,
+    };
+  }
+  if (retrieval) {
+    return {
+      status: "Running",
+      label: "Assistant and reconciliation",
+      detail: "waiting for final write",
+    };
+  }
+  if (extraction) {
+    return {
+      status: "Running",
+      label: "Retrieval",
+      detail: "searching memory context",
+    };
+  }
+  return {
+    status: "Running",
+    label: "Extraction",
+    detail: progress.status || "waiting for memory trace",
+  };
+}
+
+function liveProcessRows(progress) {
+  const trace = progress.trace || {};
+  const extraction = trace.extraction || null;
+  const retrieval = trace.retrieval || null;
+  const write = trace.write || null;
+  const searchHits = retrieval?.search_result?.hits || [];
+  const memoryContext = retrieval?.memory_context || [];
+  const writePlan = write?.write_plan || {};
+  const operations = writePlan.operations || [];
+  const rows = [];
+
+  rows.push(stepText(
+    extraction ? "done" : progress.trace ? "running" : "pending",
+    "Extraction",
+    extraction
+      ? `${(extraction.normalized_records || []).length} candidates`
+      : "waiting for candidate extraction",
+  ));
+  rows.push(stepText(
+    retrieval ? "done" : extraction ? "running" : "pending",
+    "Retrieval",
+    retrieval
+      ? `${searchHits.length} hits, ${memoryContext.length} context blocks`
+      : "waiting for memory search",
+  ));
+  rows.push(stepText(
+    write ? "done" : retrieval ? "running" : "pending",
+    "Assistant and reconciliation",
+    write
+      ? `${writePlan.metadata?.reconciler || "reconciler"} completed`
+      : retrieval
+        ? "assistant response or reconciliation in progress"
+        : "waiting for retrieval",
+  ));
+  rows.push(stepText(
+    write ? "done" : retrieval ? "running" : "pending",
+    "Write",
+    write
+      ? `${operations.length} operations${actionCountsSummary(processWriteActionCounts(operations))}`
+      : "waiting for write result",
+  ));
+  return rows;
+}
+
+function stepText(status, label, detail) {
+  return `${status.toUpperCase()} · ${label} · ${detail}`;
+}
+
+function processWriteActionCounts(operations) {
+  return (operations || []).reduce((counts, operation) => {
+    const action = operation?.action;
+    if (action) {
+      counts[action] = (counts[action] || 0) + 1;
+    }
+    return counts;
+  }, {});
 }
 
 function scoreText(score) {
@@ -872,6 +1513,9 @@ function resetTurnDebug() {
 }
 
 function resetSessionDebugState() {
+  stopLiveProcessPolling();
+  state.liveProcess = null;
+  state.processNodeOpen = new Set();
   resetCheckpoints();
   resetTurnDebug();
   state.traceDetailsById = new Map();
@@ -937,14 +1581,14 @@ async function loadSessions() {
   }
   persistSelection();
   renderSessions();
-  await loadMessages();
+  await loadMessages({ stickToBottom: true });
 }
 
-async function loadMessages() {
+async function loadMessages(options = {}) {
   if (!state.selectedSessionId) {
     state.messages = [];
     resetSessionDebugState();
-    renderMessages();
+    renderMessages(options);
     return;
   }
   const sessionId = state.selectedSessionId;
@@ -960,7 +1604,7 @@ async function loadMessages() {
   if (sessionId !== state.selectedSessionId) {
     return;
   }
-  renderMessages();
+  renderMessages(options);
 }
 
 async function loadCheckpoints(sessionId = state.selectedSessionId) {
@@ -990,6 +1634,83 @@ async function loadTurnDebug(sessionId = state.selectedSessionId) {
   }
   state.turnDebug = data.turn_debug || [];
   indexTurnDebug();
+}
+
+function startLiveProcessPolling(sessionId, startedAt) {
+  stopLiveProcessPolling();
+  state.liveProcess = {
+    sessionId,
+    startedAt,
+    status: "Queued",
+    summary: null,
+    trace: null,
+    traceId: null,
+  };
+  pollLiveProcess(sessionId, startedAt);
+  state.liveProcessTimer = window.setInterval(() => {
+    pollLiveProcess(sessionId, startedAt);
+  }, 700);
+}
+
+function stopLiveProcessPolling() {
+  if (state.liveProcessTimer) {
+    window.clearInterval(state.liveProcessTimer);
+    state.liveProcessTimer = null;
+  }
+}
+
+async function pollLiveProcess(sessionId, startedAt) {
+  if (!state.liveProcess || state.liveProcess.sessionId !== sessionId) {
+    return;
+  }
+  try {
+    const data = await api(`/api/debug/memory/traces?session_id=${encodeURIComponent(sessionId)}&limit=6`);
+    if (!state.liveProcess || state.liveProcess.sessionId !== sessionId) {
+      return;
+    }
+    const summary = newestTraceAfter(data.traces || [], startedAt);
+    if (!summary) {
+      state.liveProcess = {
+        ...state.liveProcess,
+        status: "Waiting for memory trace",
+      };
+      renderMessages();
+      return;
+    }
+    let trace = state.liveProcess.trace;
+    if (summary.trace_id && summary.trace_id !== state.liveProcess.traceId) {
+      trace = null;
+    }
+    if (summary.trace_id) {
+      const detail = await api(`/api/debug/memory/traces/${encodeURIComponent(summary.trace_id)}`);
+      if (!state.liveProcess || state.liveProcess.sessionId !== sessionId) {
+        return;
+      }
+      trace = detail.trace || trace;
+    }
+    state.liveProcess = {
+      ...state.liveProcess,
+      status: summary.status || "Running",
+      summary,
+      trace,
+      traceId: summary.trace_id || state.liveProcess.traceId,
+    };
+    renderMessages();
+  } catch (error) {
+    state.liveProcess = {
+      ...state.liveProcess,
+      status: `Debug polling failed: ${error.message}`,
+    };
+    renderMessages();
+  }
+}
+
+function newestTraceAfter(traces, startedAt) {
+  const lowerBound = Date.parse(startedAt) - 5000;
+  return (traces || []).find((trace) => {
+    const createdAt = Date.parse(trace.created_at || "");
+    return Number.isFinite(createdAt) && createdAt >= lowerBound;
+  }) || null;
 }
 
 async function refreshAll() {
@@ -1114,6 +1835,9 @@ els.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const content = els.messageInput.value.trim();
   if (!content || !state.selectedSessionId) return;
+  const sessionId = state.selectedSessionId;
+  const startedAt = new Date().toISOString();
+  const idempotencyKey = createIdempotencyKey();
   try {
     setBusy(true);
     els.messageInput.value = "";
@@ -1124,20 +1848,25 @@ els.messageForm.addEventListener("submit", async (event) => {
       created_at: new Date().toISOString(),
     };
     state.messages = [...state.messages, pending];
-    renderMessages();
+    startLiveProcessPolling(sessionId, startedAt);
+    renderMessages({ stickToBottom: true });
 
-    await api(`/api/sessions/${encodeURIComponent(state.selectedSessionId)}/messages`, {
+    await api(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: "POST",
       body: JSON.stringify({
         username: state.selectedUsername,
         content,
-        idempotency_key: createIdempotencyKey(),
+        idempotency_key: idempotencyKey,
       }),
     });
+    stopLiveProcessPolling();
+    state.liveProcess = null;
     await loadSessions();
   } catch (error) {
+    stopLiveProcessPolling();
+    state.liveProcess = null;
     showToast(error.message, "error");
-    await loadMessages();
+    await loadMessages({ stickToBottom: true });
   } finally {
     setBusy(false);
     els.messageInput.focus();
