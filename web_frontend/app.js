@@ -7,6 +7,7 @@ const state = {
   turnDebug: [],
   turnDebugByUserMessageId: new Map(),
   traceDetailsById: new Map(),
+  processCardOpen: new Set(),
   processNodeOpen: new Set(),
   liveProcess: null,
   liveProcessTimer: null,
@@ -291,6 +292,10 @@ function isChatNearBottom() {
 function processDebugCard(debug) {
   const details = document.createElement("details");
   details.className = "process-card";
+  const cardKey = processCardKey(debug);
+  if (cardKey && state.processCardOpen.has(cardKey)) {
+    details.open = true;
+  }
 
   const summary = document.createElement("summary");
   summary.className = "process-summary";
@@ -299,11 +304,14 @@ function processDebugCard(debug) {
   title.className = "process-title";
   title.textContent = "Memory process";
 
-  const meta = document.createElement("span");
-  meta.className = "process-meta";
-  meta.textContent = processSummaryText(debug);
-
-  summary.append(title, meta);
+  summary.append(title);
+  const summaryText = processSummaryText(debug);
+  if (summaryText) {
+    const meta = document.createElement("span");
+    meta.className = "process-meta";
+    meta.textContent = summaryText;
+    summary.append(meta);
+  }
 
   const body = document.createElement("div");
   body.className = "process-body";
@@ -311,27 +319,35 @@ function processDebugCard(debug) {
 
   details.append(summary, body);
   details.addEventListener("toggle", () => {
+    if (cardKey) {
+      if (details.open) {
+        state.processCardOpen.add(cardKey);
+      } else {
+        state.processCardOpen.delete(cardKey);
+      }
+    }
     if (details.open) {
       loadTraceDetails(debug.trace_id, body);
     }
   });
+  if (details.open) {
+    loadTraceDetails(debug.trace_id, body);
+  }
   return details;
 }
 
+function processCardKey(debug) {
+  if (debug?.trace_id) {
+    return `trace:${debug.trace_id}`;
+  }
+  if (debug?.user_message_id) {
+    return `message:${debug.user_message_id}`;
+  }
+  return "";
+}
+
 function processSummaryText(debug) {
-  const active = debug.active_counts || {};
-  const activeTotal = ["events", "entities", "properties", "other"]
-    .reduce((sum, key) => sum + Number(active[key] || 0), 0);
-  const writeCount = Number(debug.write_operation_count || 0);
-  return [
-    `Extractor ${debug.candidate_count || 0}`,
-    `Retrieval ${debug.search_hit_count || 0}`,
-    debug.reconciler ? `Reconciler ${debug.reconciler}` : "",
-    writeCount ? `Write ${writeCount}${actionCountsSummary(debug.write_action_counts)}` : "",
-    `Active ${activeTotal}`,
-    `Context ${debug.memory_context_count || 0}`,
-    debug.memory_status === "failed" ? "Memory failed" : "",
-  ].filter(Boolean).join(" · ");
+  return debug.memory_status === "failed" ? "Memory failed" : "";
 }
 
 async function loadTraceDetails(traceId, container) {
@@ -928,6 +944,7 @@ function activeContextRecords(activeContext) {
 function liveProcessCard(progress) {
   const details = document.createElement("details");
   details.className = "process-card live-process-card";
+  details.dataset.liveProcessCard = "true";
   details.open = Boolean(progress.open);
 
   const summary = document.createElement("summary");
@@ -937,11 +954,11 @@ function liveProcessCard(progress) {
   title.className = "process-title";
   title.textContent = "Memory process";
 
+  summary.append(title);
   const meta = document.createElement("span");
   meta.className = "process-meta";
   meta.textContent = liveProcessSummaryText(progress);
-
-  summary.append(title, meta);
+  summary.append(meta);
 
   const body = document.createElement("div");
   body.className = "process-body";
@@ -962,9 +979,27 @@ function liveProcessCard(progress) {
   return details;
 }
 
+function renderLiveProcessUpdate() {
+  if (!state.liveProcess) {
+    return;
+  }
+  const existing = els.chatLog.querySelector("[data-live-process-card='true']");
+  if (!existing) {
+    renderMessages();
+    return;
+  }
+  existing.replaceWith(liveProcessCard(state.liveProcess));
+}
+
+function rememberLiveProcessOpenState() {
+  if (state.liveProcess?.open && state.liveProcess.traceId) {
+    state.processCardOpen.add(`trace:${state.liveProcess.traceId}`);
+  }
+}
+
 function liveProcessSummaryText(progress) {
   const current = currentLiveStep(progress);
-  return `${current.status} · ${current.label} · ${current.detail}`;
+  return `${current.status} · ${current.label}`;
 }
 
 function currentLiveStep(progress) {
@@ -1515,6 +1550,7 @@ function resetTurnDebug() {
 function resetSessionDebugState() {
   stopLiveProcessPolling();
   state.liveProcess = null;
+  state.processCardOpen = new Set();
   state.processNodeOpen = new Set();
   resetCheckpoints();
   resetTurnDebug();
@@ -1674,7 +1710,7 @@ async function pollLiveProcess(sessionId, startedAt) {
         ...state.liveProcess,
         status: "Waiting for memory trace",
       };
-      renderMessages();
+      renderLiveProcessUpdate();
       return;
     }
     let trace = state.liveProcess.trace;
@@ -1695,13 +1731,13 @@ async function pollLiveProcess(sessionId, startedAt) {
       trace,
       traceId: summary.trace_id || state.liveProcess.traceId,
     };
-    renderMessages();
+    renderLiveProcessUpdate();
   } catch (error) {
     state.liveProcess = {
       ...state.liveProcess,
       status: `Debug polling failed: ${error.message}`,
     };
-    renderMessages();
+    renderLiveProcessUpdate();
   }
 }
 
@@ -1860,6 +1896,7 @@ els.messageForm.addEventListener("submit", async (event) => {
       }),
     });
     stopLiveProcessPolling();
+    rememberLiveProcessOpenState();
     state.liveProcess = null;
     await loadSessions();
   } catch (error) {
