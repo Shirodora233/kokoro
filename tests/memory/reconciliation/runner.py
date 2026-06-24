@@ -39,6 +39,7 @@ def main() -> int:
         test_reuses_direct_property_match,
         test_attaches_description_to_reused_event,
         test_llm_reconciler_reuses_direct_match,
+        test_llm_reconciler_action_matrix_compiles_all_actions,
         test_llm_reconciler_repairs_invalid_decision,
         test_llm_reconciler_falls_back_on_bad_json,
         test_plan_is_provider_neutral_dict,
@@ -237,6 +238,162 @@ def test_llm_reconciler_reuses_direct_match() -> None:
     assert operation.existing_record_id == "ent_tea"
     assert plan.metadata["reconciler"] == "llm"
     assert plan.metadata["summary"] == "reuse existing entity"
+
+
+def test_llm_reconciler_action_matrix_compiles_all_actions() -> None:
+    store = InMemoryMemoryStore(
+        [
+            _record("ent_tea", "entity", "茉莉花茶", client_id="ent_tea"),
+            _record(
+                "prop_drink_old",
+                "property",
+                "用户每天喝咖啡",
+                client_id="prop_drink_old",
+                metadata={"property_type": "habit"},
+            ),
+            _record("ent_cat_a", "entity", "阿毛", client_id="ent_cat_a"),
+            _record("ent_cat_b", "entity", "阿毛猫", client_id="ent_cat_b"),
+            _record(
+                "evt_old",
+                "event",
+                "旧门诊安排",
+                client_id="evt_old",
+                metadata={"event_type": "appointment"},
+            ),
+            _record(
+                "prop_noise",
+                "property",
+                "临时噪音",
+                client_id="prop_noise",
+            ),
+        ]
+    )
+    candidates = [
+        _candidate("entity", "新的收音机", client_id="cand_create"),
+        _candidate("entity", "茉莉花茶", client_id="cand_reuse"),
+        _candidate(
+            "property",
+            "茉莉花茶少糖",
+            client_id="cand_attach",
+            metadata={"property_type": "preference"},
+        ),
+        _candidate(
+            "property",
+            "用户每天喝咖啡",
+            client_id="cand_update",
+            metadata={"property_type": "habit"},
+        ),
+        _candidate("entity", "阿毛", client_id="cand_merge"),
+        _candidate(
+            "event",
+            "旧门诊安排",
+            client_id="cand_invalidate",
+            metadata={"event_type": "appointment"},
+        ),
+        _candidate(
+            "property",
+            "用户喜欢咖啡",
+            client_id="cand_conflict",
+            metadata={"property_type": "preference"},
+        ),
+        _candidate("property", "临时噪音", client_id="cand_ignore"),
+    ]
+    plan = _llm_plan(
+        store,
+        candidates,
+        [
+            {
+                "decisions": [
+                    {
+                        "candidate_id": "cand_create",
+                        "action": "create",
+                        "reason": "new durable entity",
+                    },
+                    {
+                        "candidate_id": "cand_reuse",
+                        "action": "reuse",
+                        "existing_record_id": "ent_tea",
+                        "confidence": "high",
+                        "reason": "same entity",
+                    },
+                    {
+                        "candidate_id": "cand_attach",
+                        "action": "attach",
+                        "target_record_id": "ent_tea",
+                        "relation_type": "has_property",
+                        "reason": "new preference for known entity",
+                    },
+                    {
+                        "candidate_id": "cand_update",
+                        "action": "update",
+                        "existing_record_id": "prop_drink_old",
+                        "replacement_text": "用户最近改为每天喝咖啡",
+                        "replacement_metadata": {"updated_from": "test"},
+                        "reason": "candidate refines existing habit",
+                    },
+                    {
+                        "candidate_id": "cand_merge",
+                        "action": "merge",
+                        "existing_record_id": "ent_cat_a",
+                        "merge_source_record_ids": ["ent_cat_b"],
+                        "reason": "same entity under a longer name",
+                    },
+                    {
+                        "candidate_id": "cand_invalidate",
+                        "action": "invalidate",
+                        "invalidated_record_ids": ["evt_old"],
+                        "reason": "old appointment no longer active",
+                    },
+                    {
+                        "candidate_id": "cand_conflict",
+                        "action": "flag_conflict",
+                        "reason": "insufficient evidence to overwrite coffee preference",
+                    },
+                    {
+                        "candidate_id": "cand_ignore",
+                        "action": "ignore",
+                        "existing_record_id": "prop_noise",
+                        "reason": "not durable",
+                    },
+                ],
+                "summary": "action matrix",
+            }
+        ],
+    )
+
+    assert plan.metadata["reconciler"] == "llm"
+    assert plan.metadata["operation_count"] == len(candidates)
+    assert _operation(plan, "cand_create").action == "create"
+    assert _operation(plan, "cand_reuse").existing_record_id == "ent_tea"
+
+    attach = _operation(plan, "cand_attach")
+    assert attach.action == "attach"
+    assert attach.target_record_id == "ent_tea"
+    assert attach.relation_type == "has_property"
+
+    update = _operation(plan, "cand_update")
+    assert update.action == "update"
+    assert update.existing_record_id == "prop_drink_old"
+    assert update.replacement is not None
+    assert update.replacement.text == "用户最近改为每天喝咖啡"
+    assert update.replacement.metadata["updated_from"] == "test"
+
+    merge = _operation(plan, "cand_merge")
+    assert merge.action == "merge"
+    assert merge.existing_record_id == "ent_cat_a"
+    assert merge.merge_source_record_ids == ["ent_cat_b"]
+
+    invalidate = _operation(plan, "cand_invalidate")
+    assert invalidate.action == "invalidate"
+    assert invalidate.invalidated_record_ids == ["evt_old"]
+
+    conflict = _operation(plan, "cand_conflict")
+    assert conflict.action == "flag_conflict"
+    assert conflict.reason
+
+    ignore = _operation(plan, "cand_ignore")
+    assert ignore.action == "ignore"
+    assert ignore.existing_record_id == "prop_noise"
 
 
 def test_llm_reconciler_repairs_invalid_decision() -> None:

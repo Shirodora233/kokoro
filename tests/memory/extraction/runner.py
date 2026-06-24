@@ -8,10 +8,11 @@ from collections.abc import Callable
 from llm.interfaces import ChatCompletionResult, ChatMessageParam
 from memory.extraction import LLMMemoryExtractor, MemoryCandidateCoalescer
 from memory.extraction.parser import parse_extraction_response
-from memory.models import MemoryInputMessage, MemoryTurnInput
-
-USER_ID = "usr_extraction_test"
-SESSION_ID = "ses_extraction_test"
+from tests.memory.scenarios import (
+    duplicate_entity_property_json,
+    relative_plan_json,
+    turn,
+)
 
 
 def main() -> int:
@@ -19,6 +20,7 @@ def main() -> int:
         test_coalescer_keeps_event_entities_as_refs_and_moves_properties_top_level,
         test_coalescer_merges_same_entity_by_name_and_type_with_different_client_ids,
         test_llm_extractor_normalizes_coalesced_records_once,
+        test_llm_extractor_normalizes_relative_event_time_and_inherited_description_time,
     ]
     for test in tests:
         test()
@@ -28,7 +30,7 @@ def main() -> int:
 
 
 def test_coalescer_keeps_event_entities_as_refs_and_moves_properties_top_level() -> None:
-    batch = parse_extraction_response(_duplicate_entity_property_json())
+    batch = parse_extraction_response(duplicate_entity_property_json())
 
     coalesced = MemoryCandidateCoalescer().coalesce(batch)
 
@@ -48,7 +50,7 @@ def test_coalescer_keeps_event_entities_as_refs_and_moves_properties_top_level()
 
 def test_coalescer_merges_same_entity_by_name_and_type_with_different_client_ids() -> None:
     batch = parse_extraction_response(
-        _duplicate_entity_property_json(
+        duplicate_entity_property_json(
             event_entity_client_id="event_food",
             top_entity_client_id="top_food",
         )
@@ -72,10 +74,10 @@ def test_coalescer_merges_same_entity_by_name_and_type_with_different_client_ids
 
 def test_llm_extractor_normalizes_coalesced_records_once() -> None:
     extractor = LLMMemoryExtractor(
-        chat_client=_StaticChatClient(_duplicate_entity_property_json())
+        chat_client=_StaticChatClient(duplicate_entity_property_json())
     )
 
-    records = list(extractor.extract(_turn()))
+    records = list(extractor.extract(turn()))
 
     properties = [
         record
@@ -104,6 +106,55 @@ def test_llm_extractor_normalizes_coalesced_records_once() -> None:
     assert len(involves_food_links) == 1
 
 
+def test_llm_extractor_normalizes_relative_event_time_and_inherited_description_time() -> None:
+    extractor = LLMMemoryExtractor(chat_client=_StaticChatClient(relative_plan_json()))
+
+    records = list(
+        extractor.extract(
+            turn(
+                content="明天上午十点我要和林医生复诊，地点在静安的门诊",
+            )
+        )
+    )
+
+    time_refs = [
+        record
+        for record in records
+        if record.memory_type == "time_ref"
+        and record.metadata.get("candidate_client_id") == "time_follow_up"
+    ]
+    scheduled_links = [
+        record
+        for record in records
+        if record.memory_type == "time_link"
+        and record.metadata.get("time_ref_client_id") == "time_follow_up"
+        and record.metadata.get("time_role") == "scheduled_at"
+    ]
+    event_links = [
+        record
+        for record in scheduled_links
+        if record.metadata.get("target_client_id") == "event_follow_up"
+    ]
+    description_links = [
+        record
+        for record in scheduled_links
+        if record.metadata.get("target_client_id") == "desc_follow_up"
+    ]
+
+    assert len(time_refs) == 1
+    time_metadata = time_refs[0].metadata
+    assert time_metadata["time_kind"] == "relative"
+    assert time_metadata["timeline_kind"] == "real_world"
+    assert time_metadata["certainty"] == "resolved"
+    assert time_metadata["anchor_timezone"] == "Asia/Shanghai"
+    assert time_metadata["anchor_utc_offset"] == "+08:00"
+    assert time_metadata["anchor_message_id"] == "msg_memory_scenario"
+    assert time_metadata["resolved_start"] == "2026-06-03T10:00:00+08:00"
+    assert time_metadata["granularity"] == "minute"
+    assert len(event_links) == 1
+    assert len(description_links) == 1
+
+
 class _StaticChatClient:
     def __init__(self, content: str) -> None:
         self.content = content
@@ -120,97 +171,6 @@ class _StaticChatClient:
             usage={"total_tokens": 1},
             provider_message_id="provider_extraction_test",
         )
-
-
-def _turn() -> MemoryTurnInput:
-    message = MemoryInputMessage(
-        id="msg_pad_krapow",
-        role="user",
-        content="想起来前几天去吃打抛饭，但是那个吃起来很辣。",
-        user_id=USER_ID,
-        session_id=SESSION_ID,
-        created_at="2026-06-02T10:00:00+08:00",
-    )
-    return MemoryTurnInput(
-        user_id=USER_ID,
-        session_id=SESSION_ID,
-        timezone="Asia/Shanghai",
-        new_message=message,
-        conversation_context=[message],
-    )
-
-
-def _duplicate_entity_property_json(
-    *,
-    event_entity_client_id: str = "entity_food",
-    top_entity_client_id: str = "entity_food",
-) -> str:
-    return """
-{
-  "event_candidates": [
-    {
-      "client_id": "event_pad_krapow",
-      "title": "吃打抛饭体验",
-      "event_type": "story_beat",
-      "descriptions": [
-        {
-          "client_id": "desc_pad_krapow",
-          "text": "用户前几天去吃了打抛饭，感觉很辣。",
-          "description_type": "detail",
-          "source_message_ids": ["msg_pad_krapow"],
-          "source_quote": "前几天去吃打抛饭"
-        }
-      ],
-      "entities": [
-        {
-          "client_id": "__EVENT_ENTITY_CLIENT_ID__",
-          "name": "打抛饭",
-          "entity_type": "object",
-          "identity_summary": "一种食物",
-          "properties": [
-            {
-              "client_id": "prop_spicy",
-              "text": "打抛饭吃起来很辣",
-              "property_type": "attribute",
-              "source_message_ids": ["msg_pad_krapow"],
-              "source_quote": "那个吃起来很辣"
-            }
-          ],
-          "source_message_ids": ["msg_pad_krapow"],
-          "source_quote": "打抛饭"
-        }
-      ],
-      "source_message_ids": ["msg_pad_krapow"],
-      "source_quote": "想起来前几天去吃打抛饭，但是那个吃起来很辣。"
-    }
-  ],
-  "entity_candidates": [
-    {
-      "client_id": "__TOP_ENTITY_CLIENT_ID__",
-      "name": "打抛饭",
-      "entity_type": "object",
-      "identity_summary": "一种食物",
-      "properties": [
-        {
-          "client_id": "prop_spicy",
-          "text": "打抛饭吃起来很辣",
-          "property_type": "attribute",
-          "source_message_ids": ["msg_pad_krapow"],
-          "source_quote": "那个吃起来很辣"
-        }
-      ],
-      "source_message_ids": ["msg_pad_krapow"],
-      "source_quote": "打抛饭"
-    }
-  ]
-}
-""".replace(
-        "__EVENT_ENTITY_CLIENT_ID__",
-        event_entity_client_id,
-    ).replace(
-        "__TOP_ENTITY_CLIENT_ID__",
-        top_entity_client_id,
-    )
 
 
 if __name__ == "__main__":
