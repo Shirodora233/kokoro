@@ -13,11 +13,19 @@ from typing import Any
 from uuid import uuid4
 
 from conversation.config import StorageConfig
+from conversation.storage.postgres import PostgresConversationStore
 from llm.config import LLMConfig
 from llm.openai_client import OpenAIChatClient
 from memory.config import MemoryRuntimeConfig
 from memory.extraction import LLMMemoryExtractor, MemoryExtractionPromptBuilder
-from memory.models import MemoryInputMessage, MemoryTurnCommitInput, MemoryTurnResult
+from memory.models import (
+    MemoryInputMessage,
+    MemoryRecord,
+    MemorySourceRef,
+    MemoryTurnCommitInput,
+    MemoryTurnResult,
+)
+from memory.persistence import MemoryRecordPersistenceAdapter
 from memory.persistence.postgres import PostgresPersistentMemoryRepository
 from memory.retrieval import (
     NormalizedMemoryContextRetriever,
@@ -25,6 +33,7 @@ from memory.retrieval import (
 )
 from memory.system import MemoryRuntime
 from memory.writing import PersistentMemoryWritePlanApplier
+from psycopg.types.json import Jsonb
 from tests.memory.system_real.recording import RecordingChatClient, TokenUsage
 
 USER_ID_PREFIX = "usr_pg_real_memory"
@@ -57,6 +66,7 @@ class ScenarioCapture:
     turns: list[TurnCapture]
     generic_records: list[dict[str, Any]]
     normalized_rows: dict[str, list[dict[str, Any]]]
+    checkpoint_revision_probe: dict[str, Any]
     duplicate_links: list[dict[str, Any]]
     duplicate_time_links: list[dict[str, Any]]
     checks: list[CheckResult]
@@ -218,12 +228,19 @@ def _run_scenario(
 
     generic_records: list[dict[str, Any]] = []
     normalized_rows = _load_normalized_rows(repository, user_id, session_id)
+    checkpoint_revision_probe = _run_checkpoint_revision_probe(
+        database_url=database_url,
+        repository=repository,
+        user_id=user_id,
+        session_id=f"{session_id}_checkpoint_probe",
+    )
     duplicate_links = _duplicate_links(repository, user_id, session_id)
     duplicate_time_links = _duplicate_time_links(repository, session_id)
     checks = _checks(
         turns=turns,
         generic_records=generic_records,
         normalized_rows=normalized_rows,
+        checkpoint_revision_probe=checkpoint_revision_probe,
         duplicate_links=duplicate_links,
         duplicate_time_links=duplicate_time_links,
     )
@@ -233,6 +250,7 @@ def _run_scenario(
         turns=turns,
         generic_records=generic_records,
         normalized_rows=normalized_rows,
+        checkpoint_revision_probe=checkpoint_revision_probe,
         duplicate_links=duplicate_links,
         duplicate_time_links=duplicate_time_links,
         checks=checks,
@@ -268,6 +286,7 @@ def _checks(
     turns: list[TurnCapture],
     generic_records: list[dict[str, Any]],
     normalized_rows: dict[str, list[dict[str, Any]]],
+    checkpoint_revision_probe: dict[str, Any],
     duplicate_links: list[dict[str, Any]],
     duplicate_time_links: list[dict[str, Any]],
 ) -> list[CheckResult]:
@@ -277,6 +296,7 @@ def _checks(
         _check_event_entity_refs_do_not_carry_properties(turns),
         _check_normalized_event(normalized_rows),
         _check_normalized_food_property(normalized_rows),
+        _check_checkpoint_revision_probe(checkpoint_revision_probe),
         _check_no_duplicate_links(duplicate_links),
         _check_no_duplicate_time_links(duplicate_time_links),
     ]
@@ -364,6 +384,41 @@ def _check_normalized_food_property(
     return CheckResult("normalized entity/property 记录打抛饭很辣", True, "ok")
 
 
+def _check_checkpoint_revision_probe(payload: dict[str, Any]) -> CheckResult:
+    snapshots = payload.get("snapshots")
+    if not isinstance(snapshots, dict):
+        return CheckResult("checkpoint revision as_of probe", False, "missing snapshots")
+    c1 = _probe_texts(snapshots.get("c1"))
+    c2 = _probe_texts(snapshots.get("c2"))
+    c3 = _probe_texts(snapshots.get("c3"))
+    inactive_c3 = snapshots.get("c3_include_inactive")
+    inactive_statuses = [
+        item.get("metadata", {}).get("status")
+        for item in inactive_c3
+        if isinstance(item, dict) and item.get("id") == payload.get("property_id")
+    ] if isinstance(inactive_c3, list) else []
+    failures: list[str] = []
+    if "用户喜欢少糖" not in c1:
+        failures.append("C1 missing 少糖")
+    if "用户喜欢无糖" in c1:
+        failures.append("C1 leaked 无糖")
+    if "用户喜欢无糖" not in c2:
+        failures.append("C2 missing 无糖")
+    if "用户喜欢少糖" in c2:
+        failures.append("C2 leaked 少糖")
+    if "用户喜欢无糖" in c3:
+        failures.append("C3 still active")
+    if "invalidated" not in inactive_statuses:
+        failures.append("C3 inactive view missing invalidated status")
+    if failures:
+        return CheckResult(
+            "checkpoint revision as_of probe",
+            False,
+            "; ".join(failures),
+        )
+    return CheckResult("checkpoint revision as_of probe", True, "ok")
+
+
 def _check_no_duplicate_links(duplicates: list[dict[str, Any]]) -> CheckResult:
     if duplicates:
         return CheckResult("memory_relations 无重复自然关系", False, json.dumps(duplicates))
@@ -378,6 +433,287 @@ def _check_no_duplicate_time_links(duplicates: list[dict[str, Any]]) -> CheckRes
             json.dumps(duplicates),
         )
     return CheckResult("memory_time_links 无重复自然关系", True, "ok")
+
+
+def _run_checkpoint_revision_probe(
+    *,
+    database_url: str,
+    repository: PostgresPersistentMemoryRepository,
+    user_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    PostgresConversationStore(database_url)
+    now = datetime.now(UTC).isoformat()
+    checkpoint_ids = {
+        "c1": f"chk_{session_id}_c1",
+        "c2": f"chk_{session_id}_c2",
+        "c3": f"chk_{session_id}_c3",
+    }
+    with repository.database.connect() as connection:
+        with connection.transaction():
+            connection.execute(
+                """
+                INSERT INTO users (id, username, display_name, metadata, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (
+                    user_id,
+                    f"{user_id}_checkpoint_probe",
+                    "Postgres real checkpoint probe",
+                    Jsonb({}),
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    id, user_id, title, metadata, created_at, updated_at,
+                    head_checkpoint_id, root_session_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, NULL, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (
+                    session_id,
+                    user_id,
+                    "checkpoint revision probe",
+                    Jsonb({"source": "postgres_real_runner"}),
+                    now,
+                    now,
+                    session_id,
+                ),
+            )
+            _insert_probe_checkpoint(
+                connection,
+                session_id=session_id,
+                checkpoint_id=checkpoint_ids["c1"],
+                parent_checkpoint_id=None,
+                sequence=2,
+                created_at=now,
+            )
+            _insert_probe_checkpoint(
+                connection,
+                session_id=session_id,
+                checkpoint_id=checkpoint_ids["c2"],
+                parent_checkpoint_id=checkpoint_ids["c1"],
+                sequence=4,
+                created_at=now,
+            )
+            _insert_probe_checkpoint(
+                connection,
+                session_id=session_id,
+                checkpoint_id=checkpoint_ids["c3"],
+                parent_checkpoint_id=checkpoint_ids["c2"],
+                sequence=6,
+                created_at=now,
+            )
+            _insert_probe_ancestry(
+                connection,
+                checkpoint_ids["c1"],
+                [checkpoint_ids["c1"]],
+            )
+            _insert_probe_ancestry(
+                connection,
+                checkpoint_ids["c2"],
+                [checkpoint_ids["c2"], checkpoint_ids["c1"]],
+            )
+            _insert_probe_ancestry(
+                connection,
+                checkpoint_ids["c3"],
+                [checkpoint_ids["c3"], checkpoint_ids["c2"], checkpoint_ids["c1"]],
+            )
+            connection.execute(
+                """
+                UPDATE sessions
+                SET head_checkpoint_id = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (checkpoint_ids["c3"], now, session_id),
+            )
+
+    adapter = MemoryRecordPersistenceAdapter()
+    entity_id = f"ent_{session_id}_user"
+    property_id = f"prop_{session_id}_sugar"
+    source_refs = [
+        MemorySourceRef(
+            source_type="message",
+            source_id=f"msg_{session_id}_probe",
+        )
+    ]
+    _save_probe_records(
+        repository,
+        adapter,
+        [
+            MemoryRecord(
+                id=entity_id,
+                memory_type="entity",
+                text="用户",
+                source_refs=source_refs,
+                metadata={
+                    "entity_type": "person",
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "created_turn_id": f"turn_{session_id}_c1",
+                    "created_checkpoint_id": checkpoint_ids["c1"],
+                    "write_action": "create",
+                },
+            ),
+            MemoryRecord(
+                id=property_id,
+                memory_type="property",
+                text="用户喜欢少糖",
+                source_refs=source_refs,
+                metadata={
+                    "attached_to_record_id": entity_id,
+                    "property_type": "preference",
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "created_turn_id": f"turn_{session_id}_c1",
+                    "created_checkpoint_id": checkpoint_ids["c1"],
+                    "write_action": "attach",
+                },
+            ),
+        ],
+    )
+    _save_probe_records(
+        repository,
+        adapter,
+        [
+            MemoryRecord(
+                id=property_id,
+                memory_type="property",
+                text="用户喜欢无糖",
+                source_refs=source_refs,
+                metadata={
+                    "attached_to_record_id": entity_id,
+                    "property_type": "preference",
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "created_turn_id": f"turn_{session_id}_c2",
+                    "created_checkpoint_id": checkpoint_ids["c2"],
+                    "write_action": "update",
+                },
+            )
+        ],
+    )
+    repository.update_object_status(
+        property_id,
+        "invalidated",
+        metadata={
+            "status": "invalidated",
+            "write_action": "invalidate",
+            "user_id": user_id,
+            "session_id": session_id,
+            "created_turn_id": f"turn_{session_id}_c3",
+            "created_checkpoint_id": checkpoint_ids["c3"],
+        },
+    )
+    return {
+        "checkpoint_ids": checkpoint_ids,
+        "entity_id": entity_id,
+        "property_id": property_id,
+        "snapshots": {
+            label: [
+                record.to_record()
+                for record in repository.list_records_as_of(
+                    checkpoint_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+            ]
+            for label, checkpoint_id in checkpoint_ids.items()
+        }
+        | {
+            "c3_include_inactive": [
+                record.to_record()
+                for record in repository.list_records_as_of(
+                    checkpoint_ids["c3"],
+                    user_id=user_id,
+                    session_id=session_id,
+                    include_inactive=True,
+                )
+            ]
+        },
+    }
+
+
+def _insert_probe_checkpoint(
+    connection,
+    *,
+    session_id: str,
+    checkpoint_id: str,
+    parent_checkpoint_id: str | None,
+    sequence: int,
+    created_at: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO conversation_checkpoints (
+            id, session_id, parent_checkpoint_id, sequence, session_snapshot,
+            active_memory_snapshot, metadata, created_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (
+            checkpoint_id,
+            session_id,
+            parent_checkpoint_id,
+            sequence,
+            Jsonb({}),
+            Jsonb({}),
+            Jsonb({"source": "postgres_real_revision_probe"}),
+            created_at,
+        ),
+    )
+
+
+def _insert_probe_ancestry(
+    connection,
+    descendant_checkpoint_id: str,
+    ancestors: list[str],
+) -> None:
+    for depth, ancestor_checkpoint_id in enumerate(ancestors):
+        connection.execute(
+            """
+            INSERT INTO checkpoint_ancestry (
+                ancestor_checkpoint_id, descendant_checkpoint_id, depth
+            )
+            VALUES (%s, %s, %s)
+            ON CONFLICT (ancestor_checkpoint_id, descendant_checkpoint_id)
+            DO UPDATE SET depth = EXCLUDED.depth
+            """,
+            (ancestor_checkpoint_id, descendant_checkpoint_id, depth),
+        )
+
+
+def _save_probe_records(
+    repository: PostgresPersistentMemoryRepository,
+    adapter: MemoryRecordPersistenceAdapter,
+    records: list[MemoryRecord],
+) -> None:
+    build = adapter.build_bundle(records)
+    if build.skipped_records:
+        raise RuntimeError(
+            "checkpoint revision probe skipped records: "
+            + json.dumps(
+                [item.to_record() for item in build.skipped_records],
+                ensure_ascii=False,
+            )
+        )
+    repository.save_bundle(build.bundle)
+
+
+def _probe_texts(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item["text"]
+        for item in value
+        if isinstance(item, dict) and isinstance(item.get("text"), str)
+    ]
 
 
 def _list_payload(value: Any) -> list[Any]:
@@ -572,6 +908,12 @@ def _write_report(
         lines.extend(_turn_report(turn))
     lines.extend(_json_section("Generic Records", capture.generic_records))
     lines.extend(_json_section("Normalized Rows", capture.normalized_rows))
+    lines.extend(
+        _json_section(
+            "Checkpoint Revision Probe",
+            capture.checkpoint_revision_probe,
+        )
+    )
     lines.extend(_json_section("Duplicate Links", capture.duplicate_links))
     lines.extend(_json_section("Duplicate Time Links", capture.duplicate_time_links))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -697,6 +1039,10 @@ def _cleanup(database_url: str, *, user_id: str, session_id: str) -> None:
             """,
             (user_id, session_id),
         )
+    try:
+        PostgresConversationStore(database_url).delete_user(user_id, cascade=True)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

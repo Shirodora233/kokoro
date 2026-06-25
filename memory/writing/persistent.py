@@ -83,7 +83,7 @@ class PersistentMemoryWritePlanApplier:
             if operation.action == "reuse":
                 if operation.target_candidate_id:
                     continue
-                self._apply_reuse(operation, state)
+                self._apply_reuse(operation, request, state)
             elif operation.action == "ignore":
                 state.ignored_operations.append(operation)
                 self._map_existing_candidate(operation, state)
@@ -201,7 +201,11 @@ class PersistentMemoryWritePlanApplier:
                 continue
             if operation.action not in {"attach", "create"}:
                 continue
-            endpoint_metadata = self._relation_endpoint_metadata(operation, state)
+            endpoint_metadata = self._relation_endpoint_metadata(
+                operation,
+                request,
+                state,
+            )
             if endpoint_metadata is None:
                 self._fail(operation, "relation endpoints could not be resolved", state)
                 continue
@@ -216,12 +220,13 @@ class PersistentMemoryWritePlanApplier:
     def _apply_reuse(
         self,
         operation: MemoryWriteOperation,
+        request: MemoryWriteRequest,
         state: "_ApplyState",
     ) -> None:
         if not operation.existing_record_id:
             self._fail(operation, "reuse operation has no existing_record_id", state)
             return
-        record = self._get_record(operation.existing_record_id)
+        record = self._get_record(operation.existing_record_id, request)
         if record is None:
             self._fail(operation, "existing record was not found", state)
             return
@@ -237,7 +242,7 @@ class PersistentMemoryWritePlanApplier:
         if not operation.existing_record_id:
             self._fail(operation, "update operation has no existing_record_id", state)
             return
-        existing = self._get_record(operation.existing_record_id)
+        existing = self._get_record(operation.existing_record_id, request)
         if existing is None:
             self._fail(operation, "existing record was not found", state)
             return
@@ -323,6 +328,13 @@ class PersistentMemoryWritePlanApplier:
             metadata.setdefault("user_id", request.user_id)
         if request.session_id is not None:
             metadata.setdefault("session_id", request.session_id)
+        for key in (
+            "created_turn_id",
+            "created_checkpoint_id",
+            "created_checkpoint_sequence",
+        ):
+            if key in request.metadata:
+                metadata[key] = request.metadata[key]
         return replace(
             replacement,
             id=existing.id,
@@ -359,6 +371,7 @@ class PersistentMemoryWritePlanApplier:
     def _relation_endpoint_metadata(
         self,
         operation: MemoryWriteOperation,
+        request: MemoryWriteRequest,
         state: "_ApplyState",
     ) -> dict[str, object] | None:
         if operation.record is None:
@@ -374,7 +387,7 @@ class PersistentMemoryWritePlanApplier:
             raw_value = operation.record.metadata.get(client_key)
             if not isinstance(raw_value, str):
                 continue
-            record_id = self._resolve_record_id(raw_value, state)
+            record_id = self._resolve_record_id(raw_value, request, state)
             if not record_id:
                 return None
             metadata[record_key] = record_id
@@ -383,12 +396,13 @@ class PersistentMemoryWritePlanApplier:
     def _resolve_record_id(
         self,
         candidate_or_record_id: str,
+        request: MemoryWriteRequest,
         state: "_ApplyState",
     ) -> str | None:
         mapped = state.candidate_record_ids.get(candidate_or_record_id)
         if mapped:
             return mapped
-        existing = self._get_record(candidate_or_record_id)
+        existing = self._get_record(candidate_or_record_id, request)
         return existing.id if existing else None
 
     def _record_for_candidate_id(
@@ -410,7 +424,7 @@ class PersistentMemoryWritePlanApplier:
         state: "_ApplyState",
         merged_into_object_id: str | None = None,
     ) -> MemoryRecord | None:
-        existing = self._get_record(record_id)
+        existing = self._get_record(record_id, request)
         if existing is None:
             self._fail(operation, f"status target was not found: {record_id}", state)
             return None
@@ -423,6 +437,13 @@ class PersistentMemoryWritePlanApplier:
             metadata["user_id"] = request.user_id
         if request.session_id is not None:
             metadata["session_id"] = request.session_id
+        for key in (
+            "created_turn_id",
+            "created_checkpoint_id",
+            "created_checkpoint_sequence",
+        ):
+            if key in request.metadata:
+                metadata[key] = request.metadata[key]
         if merged_into_object_id:
             metadata["merged_into_object_id"] = merged_into_object_id
         self.repository.update_object_status(
@@ -434,7 +455,17 @@ class PersistentMemoryWritePlanApplier:
         refreshed = self._get_record(record_id)
         return refreshed or replace(existing, metadata={**existing.metadata, **metadata})
 
-    def _get_record(self, record_id: str) -> MemoryRecord | None:
+    def _get_record(
+        self,
+        record_id: str,
+        request: MemoryWriteRequest | None = None,
+    ) -> MemoryRecord | None:
+        checkpoint_id = _as_of_checkpoint_id(request)
+        get_as_of = getattr(self.repository, "get_record_as_of", None)
+        if checkpoint_id is not None and callable(get_as_of):
+            record = get_as_of(record_id, checkpoint_id)
+            if isinstance(record, MemoryRecord):
+                return record
         loaders = (
             self.repository.get_event,
             self.repository.get_description,
@@ -687,4 +718,14 @@ def _persistent_to_record(item: object | None) -> MemoryRecord | None:
                 "confidence": item.confidence,
             },
         )
+    return None
+
+
+def _as_of_checkpoint_id(request: MemoryWriteRequest | None) -> str | None:
+    if request is None:
+        return None
+    for key in ("base_checkpoint_id", "as_of_checkpoint_id"):
+        value = request.metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
     return None

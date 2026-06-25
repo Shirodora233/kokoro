@@ -38,6 +38,14 @@ class PostgresNormalizedMemorySearch:
 
         query = (request.query or "").strip()
         terms = _search_terms(query)
+        as_of_checkpoint_id = _as_of_checkpoint_id(request)
+        if as_of_checkpoint_id is not None:
+            return self._search_as_of_checkpoint(
+                request,
+                as_of_checkpoint_id,
+                terms,
+                limit,
+            )
         if not terms:
             recent_hits = self._recent_hits(request, limit)
             ranked_hits = self.ranker.rank(recent_hits, request)
@@ -229,6 +237,189 @@ class PostgresNormalizedMemorySearch:
             for row in rows
         ]
 
+    def _search_as_of_checkpoint(
+        self,
+        request: MemorySearchRequest,
+        checkpoint_id: str,
+        terms: Sequence[str],
+        limit: int,
+    ) -> MemorySearchResult:
+        raw_hits: list[MemorySearchHit] = []
+        raw_hits.extend(
+            self._hits_from_entities(
+                self.repository.list_entities(
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    as_of_checkpoint_id=checkpoint_id,
+                ),
+                terms,
+            )
+        )
+        raw_hits.extend(
+            self._hits_from_events(
+                self.repository.list_events(
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    as_of_checkpoint_id=checkpoint_id,
+                ),
+                terms,
+            )
+        )
+        raw_hits.extend(
+            self._hits_from_properties(
+                self.repository.list_properties(
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    as_of_checkpoint_id=checkpoint_id,
+                ),
+                terms,
+            )
+        )
+        raw_hits.extend(
+            self._hits_from_descriptions(
+                self.repository.list_descriptions(
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    as_of_checkpoint_id=checkpoint_id,
+                ),
+                terms,
+            )
+        )
+        ranked_hits = self.ranker.rank(raw_hits, request)
+        hits = ranked_hits[:limit]
+        return MemorySearchResult(
+            hits=hits,
+            metadata={
+                "search": "postgres_normalized",
+                "strategy": "as_of_checkpoint",
+                "as_of_checkpoint_id": checkpoint_id,
+                "hit_count": len(hits),
+                "raw_hit_count": len(raw_hits),
+                "ranked_hit_count": len(ranked_hits),
+                "query": request.query,
+                "terms": list(terms),
+            },
+        )
+
+    def _hits_from_entities(self, entities, terms: Sequence[str]) -> list[MemorySearchHit]:
+        hits: list[MemorySearchHit] = []
+        for entity in entities:
+            text = " ".join(
+                part
+                for part in [
+                    entity.name,
+                    entity.entity_type,
+                    entity.identity_summary or "",
+                    " ".join(entity.aliases),
+                ]
+                if part
+            )
+            if terms and not _text_matches_terms(text, terms):
+                continue
+            hits.append(
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("entity", entity.id or ""),
+                    score=1.0,
+                    reason="entity_text_match",
+                    matched_text=text,
+                    metadata={
+                        "match_quality": _match_quality(text, terms),
+                        "confidence": entity.confidence,
+                        "importance": entity.importance,
+                    },
+                )
+            )
+        return hits
+
+    def _hits_from_events(self, events, terms: Sequence[str]) -> list[MemorySearchHit]:
+        hits: list[MemorySearchHit] = []
+        for event in events:
+            text = " ".join(
+                part
+                for part in [event.title, event.summary or "", event.event_type or ""]
+                if part
+            )
+            if terms and not _text_matches_terms(text, terms):
+                continue
+            hits.append(
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("event", event.id or ""),
+                    score=0.95,
+                    reason="event_text_match",
+                    matched_text=text,
+                    metadata={
+                        "match_quality": _match_quality(text, terms),
+                        "confidence": event.confidence,
+                        "importance": event.importance,
+                    },
+                )
+            )
+        return hits
+
+    def _hits_from_properties(
+        self,
+        properties,
+        terms: Sequence[str],
+    ) -> list[MemorySearchHit]:
+        hits: list[MemorySearchHit] = []
+        for memory_property in properties:
+            text = " ".join(
+                part
+                for part in [
+                    memory_property.content,
+                    memory_property.property_type or "",
+                ]
+                if part
+            )
+            if terms and not _text_matches_terms(text, terms):
+                continue
+            hits.append(
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("property", memory_property.id or ""),
+                    score=0.9,
+                    reason="property_text_match",
+                    matched_text=text,
+                    metadata={
+                        "match_quality": _match_quality(text, terms),
+                        "confidence": memory_property.confidence,
+                        "importance": memory_property.importance,
+                    },
+                )
+            )
+        return hits
+
+    def _hits_from_descriptions(
+        self,
+        descriptions,
+        terms: Sequence[str],
+    ) -> list[MemorySearchHit]:
+        hits: list[MemorySearchHit] = []
+        for description in descriptions:
+            text = " ".join(
+                part
+                for part in [
+                    description.content,
+                    description.description_type or "",
+                ]
+                if part
+            )
+            if terms and not _text_matches_terms(text, terms):
+                continue
+            hits.append(
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("description", description.id or ""),
+                    score=0.85,
+                    reason="description_text_match",
+                    matched_text=text,
+                    metadata={
+                        "match_quality": _match_quality(text, terms),
+                        "confidence": description.confidence,
+                        "importance": description.importance,
+                    },
+                )
+            )
+        return hits
+
     def _recent_table_rows(
         self,
         table: str,
@@ -315,8 +506,29 @@ def _visible_session_scopes(
     return [item for item in raw if isinstance(item, Mapping)]
 
 
+def _as_of_checkpoint_id(request: MemorySearchRequest) -> str | None:
+    value = request.metadata.get("as_of_checkpoint_id")
+    if isinstance(value, str) and value:
+        return value
+    value = request.metadata.get("base_checkpoint_id")
+    if isinstance(value, str) and value:
+        return value
+    for scope in reversed(_visible_session_scopes(request)):
+        scope_value = scope.get("as_of_checkpoint_id")
+        if isinstance(scope_value, str) and scope_value:
+            return scope_value
+    return None
+
+
 def _search_terms(query: str) -> list[str]:
     return [term for term in query.casefold().split() if term]
+
+
+def _text_matches_terms(text: str | None, terms: Sequence[str]) -> bool:
+    if not terms:
+        return True
+    normalized = (text or "").casefold()
+    return any(term in normalized for term in terms)
 
 
 def _object_type_for_search(object_type: MemoryObjectType) -> str:

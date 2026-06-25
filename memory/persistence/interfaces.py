@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
+from ..models import MemoryRecord
 from .models import (
     PersistentObjectRef,
     PersistentDescription,
@@ -34,25 +35,60 @@ class PersistentMemoryRepository(Protocol):
     ) -> None:
         """Update shared memory object lifecycle fields."""
 
-    def get_event(self, event_id: str) -> PersistentEvent | None:
+    def get_record_as_of(
+        self,
+        record_id: str,
+        checkpoint_id: str | None,
+    ) -> MemoryRecord | None:
+        """Load one generic memory record as visible at a checkpoint."""
+
+    def get_event(
+        self,
+        event_id: str,
+        as_of_checkpoint_id: str | None = None,
+    ) -> PersistentEvent | None:
         """Load one event by id."""
 
-    def get_description(self, description_id: str) -> PersistentDescription | None:
+    def get_description(
+        self,
+        description_id: str,
+        as_of_checkpoint_id: str | None = None,
+    ) -> PersistentDescription | None:
         """Load one description by id."""
 
-    def get_entity(self, entity_id: str) -> PersistentEntity | None:
+    def get_entity(
+        self,
+        entity_id: str,
+        as_of_checkpoint_id: str | None = None,
+    ) -> PersistentEntity | None:
         """Load one entity by id."""
 
-    def get_property(self, property_id: str) -> PersistentProperty | None:
+    def get_property(
+        self,
+        property_id: str,
+        as_of_checkpoint_id: str | None = None,
+    ) -> PersistentProperty | None:
         """Load one property by id."""
 
-    def get_link(self, link_id: str) -> PersistentLink | None:
+    def get_link(
+        self,
+        link_id: str,
+        as_of_checkpoint_id: str | None = None,
+    ) -> PersistentLink | None:
         """Load one link by id."""
 
-    def get_time_ref(self, time_ref_id: str) -> PersistentTimeRef | None:
+    def get_time_ref(
+        self,
+        time_ref_id: str,
+        as_of_checkpoint_id: str | None = None,
+    ) -> PersistentTimeRef | None:
         """Load one semantic time reference by id."""
 
-    def get_time_link(self, time_link_id: str) -> PersistentTimeLink | None:
+    def get_time_link(
+        self,
+        time_link_id: str,
+        as_of_checkpoint_id: str | None = None,
+    ) -> PersistentTimeLink | None:
         """Load one semantic time link by id."""
 
     def list_events(
@@ -60,6 +96,7 @@ class PersistentMemoryRepository(Protocol):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        as_of_checkpoint_id: str | None = None,
     ) -> list[PersistentEvent]:
         """List active events by scope."""
 
@@ -68,6 +105,7 @@ class PersistentMemoryRepository(Protocol):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        as_of_checkpoint_id: str | None = None,
     ) -> list[PersistentEntity]:
         """List entities by scope."""
 
@@ -77,6 +115,7 @@ class PersistentMemoryRepository(Protocol):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        as_of_checkpoint_id: str | None = None,
     ) -> list[PersistentDescription]:
         """List active descriptions by parent event or scope."""
 
@@ -86,6 +125,7 @@ class PersistentMemoryRepository(Protocol):
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        as_of_checkpoint_id: str | None = None,
     ) -> list[PersistentProperty]:
         """List active properties by parent entity or scope."""
 
@@ -94,6 +134,7 @@ class PersistentMemoryRepository(Protocol):
         object_refs: Sequence[PersistentObjectRef] | None = None,
         user_id: str | None = None,
         limit: int | None = None,
+        as_of_checkpoint_id: str | None = None,
     ) -> list[PersistentLink]:
         """List active links touching the given objects."""
 
@@ -101,11 +142,33 @@ class PersistentMemoryRepository(Protocol):
         self,
         target_refs: Sequence[PersistentObjectRef] | None = None,
         limit: int | None = None,
+        as_of_checkpoint_id: str | None = None,
     ) -> list[PersistentTimeLink]:
         """List time links for the given target objects."""
+
+    def list_time_refs(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+        as_of_checkpoint_id: str | None = None,
+    ) -> list[PersistentTimeRef]:
+        """List active semantic time references by scope."""
 
     def get_time_refs(
         self,
         time_ref_ids: Sequence[str],
+        as_of_checkpoint_id: str | None = None,
     ) -> list[PersistentTimeRef]:
         """Load semantic time references by id."""
+
+    def list_records_as_of(
+        self,
+        checkpoint_id: str,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+        include_inactive: bool = False,
+    ) -> list[MemoryRecord]:
+        """List generic memory records as visible at a checkpoint."""

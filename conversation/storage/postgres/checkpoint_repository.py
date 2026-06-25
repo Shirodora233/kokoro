@@ -147,9 +147,9 @@ class PostgresCheckpointRepository:
     ) -> ConversationCheckpoint | None:
         row = connection.execute(
             """
-            SELECT * FROM conversation_checkpoints
-            WHERE session_id = %s
-            ORDER BY sequence DESC, created_at DESC, id ASC
+            SELECT cp.* FROM sessions s
+            JOIN conversation_checkpoints cp ON cp.id = s.head_checkpoint_id
+            WHERE s.id = %s
             LIMIT 1
             """,
             (session_id,),
@@ -295,6 +295,47 @@ class PostgresCheckpointRepository:
                 checkpoint.created_at,
             ),
         )
+        connection.execute(
+            """
+            INSERT INTO checkpoint_ancestry (
+                ancestor_checkpoint_id, descendant_checkpoint_id, depth
+            )
+            VALUES (%s, %s, 0)
+            ON CONFLICT (ancestor_checkpoint_id, descendant_checkpoint_id)
+            DO UPDATE SET depth = EXCLUDED.depth
+            """,
+            (checkpoint.id, checkpoint.id),
+        )
+        if checkpoint.parent_checkpoint_id is not None:
+            connection.execute(
+                """
+                INSERT INTO checkpoint_ancestry (
+                    ancestor_checkpoint_id, descendant_checkpoint_id, depth
+                )
+                SELECT ancestor_checkpoint_id, %s, depth + 1
+                FROM checkpoint_ancestry
+                WHERE descendant_checkpoint_id = %s
+                  AND ancestor_checkpoint_id <> %s
+                ON CONFLICT (ancestor_checkpoint_id, descendant_checkpoint_id)
+                DO UPDATE SET depth = EXCLUDED.depth
+                """,
+                (
+                    checkpoint.id,
+                    checkpoint.parent_checkpoint_id,
+                    checkpoint.id,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO checkpoint_ancestry (
+                    ancestor_checkpoint_id, descendant_checkpoint_id, depth
+                )
+                VALUES (%s, %s, 1)
+                ON CONFLICT (ancestor_checkpoint_id, descendant_checkpoint_id)
+                DO NOTHING
+                """,
+                (checkpoint.parent_checkpoint_id, checkpoint.id),
+            )
         return checkpoint
 
     def create_branch_session(
@@ -302,17 +343,20 @@ class PostgresCheckpointRepository:
         session: ChatSession,
         branch: SessionBranch,
     ) -> ChatSession:
+        _ = branch
         with self.database.connect() as connection:
             with connection.transaction():
                 connection.execute(
                     """
-                    INSERT INTO sessions (
-                        id, user_id, title, system_prompt, model, temperature,
-                        max_context_messages, context_start_index, metadata,
-                        created_at, updated_at, archived_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
+                INSERT INTO sessions (
+                    id, user_id, title, system_prompt, model, temperature,
+                    max_context_messages, context_start_index,
+                    head_checkpoint_id, root_session_id, parent_session_id,
+                    base_checkpoint_id, metadata, created_at, updated_at,
+                    archived_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
                     (
                         session.id,
                         session.user_id,
@@ -322,28 +366,14 @@ class PostgresCheckpointRepository:
                         session.temperature,
                         session.max_context_messages,
                         session.context_start_index,
+                        session.head_checkpoint_id,
+                        session.root_session_id,
+                        session.parent_session_id,
+                        session.base_checkpoint_id,
                         Jsonb(session.metadata),
                         session.created_at,
                         session.updated_at,
                         session.archived_at,
-                    ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO session_branches (
-                        session_id, root_session_id, parent_session_id,
-                        base_checkpoint_id, base_sequence, metadata, created_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        branch.session_id,
-                        branch.root_session_id,
-                        branch.parent_session_id,
-                        branch.base_checkpoint_id,
-                        branch.base_sequence,
-                        Jsonb(branch.metadata),
-                        branch.created_at,
                     ),
                 )
         return session
@@ -357,6 +387,24 @@ class PostgresCheckpointRepository:
         connection: Any,
         session_id: str,
     ) -> SessionBranch | None:
+        session_row = connection.execute(
+            "SELECT * FROM sessions WHERE id = %s",
+            (session_id,),
+        ).fetchone()
+        if session_row and session_row.get("parent_session_id") and session_row.get(
+            "base_checkpoint_id"
+        ):
+            checkpoint = self.get_checkpoint_in_connection(
+                connection,
+                session_row["base_checkpoint_id"],
+            )
+            return SessionBranch(
+                session_id=session_row["id"],
+                root_session_id=session_row.get("root_session_id") or session_row["id"],
+                parent_session_id=session_row["parent_session_id"],
+                base_checkpoint_id=session_row["base_checkpoint_id"],
+                base_sequence=checkpoint.sequence if checkpoint else 0,
+            )
         row = connection.execute(
             "SELECT * FROM session_branches WHERE session_id = %s",
             (session_id,),
@@ -395,14 +443,29 @@ class PostgresCheckpointRepository:
         session_id: str,
         cutoff_sequence: int | None = None,
     ) -> list[Message]:
-        branch = self.get_branch_in_connection(connection, session_id)
-        inherited: list[Message] = []
-        if branch is not None:
-            inherited = self._visible_messages(
-                connection,
-                branch.parent_session_id,
-                cutoff_sequence=branch.base_sequence,
-            )
+        session = self._session_in_connection(connection, session_id)
+        if session is None:
+            raise ValueError(f"Unknown session_id: {session_id}")
+        if session.head_checkpoint_id is not None and cutoff_sequence is None:
+            rows = connection.execute(
+                """
+                SELECT m.*
+                FROM checkpoint_ancestry ca
+                JOIN conversation_checkpoints cp
+                  ON cp.id = ca.ancestor_checkpoint_id
+                JOIN messages m
+                  ON m.checkpoint_id = ca.ancestor_checkpoint_id
+                WHERE ca.descendant_checkpoint_id = %s
+                  AND m.status = 'active'
+                ORDER BY ca.depth DESC,
+                         cp.sequence ASC,
+                         COALESCE(m.sequence, 2147483647) ASC,
+                         m.created_at ASC,
+                         m.id ASC
+                """,
+                (session.head_checkpoint_id,),
+            ).fetchall()
+            return [message_from_row(row) for row in rows]
         rows = connection.execute(
             """
             SELECT * FROM messages
@@ -413,8 +476,7 @@ class PostgresCheckpointRepository:
             """,
             (session_id, cutoff_sequence, cutoff_sequence),
         ).fetchall()
-        local = [message_from_row(row) for row in rows]
-        return [*inherited, *local]
+        return [message_from_row(row) for row in rows]
 
     def _list_visible_checkpoints(
         self,
@@ -423,15 +485,25 @@ class PostgresCheckpointRepository:
         limit: int,
         cutoff_sequence: int | None = None,
     ) -> list[ConversationCheckpoint]:
-        branch = self.get_branch_in_connection(connection, session_id)
-        inherited: list[ConversationCheckpoint] = []
-        if branch is not None:
-            inherited = self._list_visible_checkpoints(
-                connection,
-                branch.parent_session_id,
-                limit=limit,
-                cutoff_sequence=branch.base_sequence,
-            )
+        if limit <= 0:
+            return []
+        session = self._session_in_connection(connection, session_id)
+        if session is None:
+            raise ValueError(f"Unknown session_id: {session_id}")
+        if session.head_checkpoint_id is not None and cutoff_sequence is None:
+            rows = connection.execute(
+                """
+                SELECT cp.*
+                FROM checkpoint_ancestry ca
+                JOIN conversation_checkpoints cp
+                  ON cp.id = ca.ancestor_checkpoint_id
+                WHERE ca.descendant_checkpoint_id = %s
+                ORDER BY ca.depth DESC, cp.sequence ASC, cp.created_at ASC, cp.id ASC
+                """,
+                (session.head_checkpoint_id,),
+            ).fetchall()
+            checkpoints = [checkpoint_from_row(row) for row in rows]
+            return checkpoints[-limit:]
         rows = connection.execute(
             """
             SELECT * FROM conversation_checkpoints
@@ -441,8 +513,8 @@ class PostgresCheckpointRepository:
             """,
             (session_id, cutoff_sequence, cutoff_sequence),
         ).fetchall()
-        checkpoints = [*inherited, *[checkpoint_from_row(row) for row in rows]]
-        return checkpoints[-max(0, limit) :]
+        checkpoints = [checkpoint_from_row(row) for row in rows]
+        return checkpoints[-limit:]
 
     def _branch_memory_scope(
         self,
@@ -451,7 +523,14 @@ class PostgresCheckpointRepository:
     ) -> list[dict[str, Any]]:
         branch = self.get_branch_in_connection(connection, session_id)
         if branch is None:
-            return [{"session_id": session_id, "max_checkpoint_sequence": None}]
+            session = self._session_in_connection(connection, session_id)
+            scope: dict[str, Any] = {
+                "session_id": session_id,
+                "max_checkpoint_sequence": None,
+            }
+            if session is not None and session.head_checkpoint_id is not None:
+                scope["as_of_checkpoint_id"] = session.head_checkpoint_id
+            return [scope]
         scopes = self._branch_memory_scope(connection, branch.parent_session_id)
         scoped: list[dict[str, Any]] = []
         for scope in scopes:
@@ -464,8 +543,37 @@ class PostgresCheckpointRepository:
                     "max_checkpoint_sequence": max_sequence,
                 }
             )
-        scoped.append({"session_id": session_id, "max_checkpoint_sequence": None})
+        session = self._session_in_connection(connection, session_id)
+        local_scope: dict[str, Any] = {
+            "session_id": session_id,
+            "max_checkpoint_sequence": None,
+        }
+        if session is not None and session.head_checkpoint_id is not None:
+            local_scope["as_of_checkpoint_id"] = session.head_checkpoint_id
+        scoped.append(local_scope)
         return scoped
+
+    def get_checkpoint_in_connection(
+        self,
+        connection: Any,
+        checkpoint_id: str,
+    ) -> ConversationCheckpoint | None:
+        row = connection.execute(
+            "SELECT * FROM conversation_checkpoints WHERE id = %s",
+            (checkpoint_id,),
+        ).fetchone()
+        return checkpoint_from_row(row) if row else None
+
+    def _session_in_connection(
+        self,
+        connection: Any,
+        session_id: str,
+    ) -> ChatSession | None:
+        row = connection.execute(
+            "SELECT * FROM sessions WHERE id = %s",
+            (session_id,),
+        ).fetchone()
+        return session_from_row(row) if row else None
 
 
 def _row_sequence(message: Message) -> int | None:

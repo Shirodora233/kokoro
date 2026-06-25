@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   temperature DOUBLE PRECISION,
   max_context_messages INTEGER,
   context_start_index INTEGER NOT NULL DEFAULT 0 CHECK (context_start_index >= 0),
+  head_checkpoint_id TEXT,
+  root_session_id TEXT,
+  parent_session_id TEXT,
+  base_checkpoint_id TEXT,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -67,6 +71,13 @@ CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS checkpoint_ancestry (
+  ancestor_checkpoint_id TEXT NOT NULL REFERENCES conversation_checkpoints(id) ON DELETE CASCADE,
+  descendant_checkpoint_id TEXT NOT NULL REFERENCES conversation_checkpoints(id) ON DELETE CASCADE,
+  depth INTEGER NOT NULL CHECK (depth >= 0),
+  PRIMARY KEY (ancestor_checkpoint_id, descendant_checkpoint_id)
+);
+
 CREATE TABLE IF NOT EXISTS session_branches (
   session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   root_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -95,6 +106,10 @@ ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS checkpoint_id TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sequence INTEGER;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS head_checkpoint_id TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS root_session_id TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS parent_session_id TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS base_checkpoint_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
@@ -107,6 +122,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_checkpoint_id ON messages(checkpoint_id)
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_session_status ON conversation_turns(session_id, status);
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_idempotency ON conversation_turns(session_id, idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_conversation_checkpoints_session_sequence ON conversation_checkpoints(session_id, sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_checkpoint_ancestry_descendant_depth
+  ON checkpoint_ancestry(descendant_checkpoint_id, depth);
+CREATE INDEX IF NOT EXISTS idx_checkpoint_ancestry_ancestor
+  ON checkpoint_ancestry(ancestor_checkpoint_id);
 CREATE INDEX IF NOT EXISTS idx_session_branches_parent ON session_branches(parent_session_id, base_checkpoint_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_memory_debug_session_sequence
   ON conversation_memory_debug_traces(session_id, checkpoint_sequence);

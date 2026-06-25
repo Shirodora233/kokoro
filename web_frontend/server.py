@@ -260,6 +260,20 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
                         limit=self._query_int(query, "limit", 100),
                     )
                 }
+            if len(parts) == 2 and parts[1] == "diff" and method == "GET":
+                right_checkpoint_id = self._optional_query_text(
+                    query,
+                    "right_checkpoint_id",
+                ) or self._optional_query_text(query, "right")
+                if not right_checkpoint_id:
+                    raise ValueError("right_checkpoint_id is required")
+                return {
+                    "diff": self.service.diff_checkpoints(
+                        checkpoint_id,
+                        right_checkpoint_id,
+                        limit=self._query_int(query, "limit", 1000),
+                    )
+                }
             if len(parts) == 1 and method == "PATCH":
                 checkpoint = self.service.update_checkpoint(
                     checkpoint_id=checkpoint_id,
@@ -331,6 +345,13 @@ class KokoroRequestHandler(BaseHTTPRequestHandler):
     def _query_bool(self, query: dict[str, list[str]], key: str) -> bool:
         value = (self._query_one(query, key) or "").lower()
         return value in {"1", "true", "yes", "on"}
+
+    def _optional_query_text(
+        self,
+        query: dict[str, list[str]],
+        key: str,
+    ) -> str | None:
+        return self._query_one(query, key)
 
     def _payload_bool(self, payload: dict[str, Any], key: str) -> bool:
         value = payload.get(key)

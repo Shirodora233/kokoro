@@ -516,6 +516,7 @@ def _build_checks(
             )
         )
         if capture.base_checkpoint_id:
+            trace_as_of_ids = _debug_trace_as_of_checkpoint_ids(capture.debug_traces)
             checks.append(
                 CheckResult(
                     "checkpoint resume created branch session",
@@ -530,7 +531,34 @@ def _build_checks(
                     ),
                 )
             )
+            checks.append(
+                CheckResult(
+                    "resume retrieval used base checkpoint as_of view",
+                    trace_as_of_ids == {capture.base_checkpoint_id},
+                    f"trace_as_of_checkpoint_ids={sorted(trace_as_of_ids)}",
+                )
+            )
     return checks
+
+
+def _debug_trace_as_of_checkpoint_ids(
+    traces: list[dict[str, Any]],
+) -> set[str]:
+    ids: set[str] = set()
+    for trace in traces:
+        retrieval = trace.get("retrieval")
+        if not isinstance(retrieval, dict):
+            continue
+        search_result = retrieval.get("search_result")
+        if not isinstance(search_result, dict):
+            continue
+        metadata = search_result.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        value = metadata.get("as_of_checkpoint_id")
+        if isinstance(value, str) and value:
+            ids.add(value)
+    return ids
 
 
 def _checkpoint_memory_records(snapshot: dict[str, Any]) -> list[dict[str, Any]]:

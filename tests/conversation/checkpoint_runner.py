@@ -10,6 +10,8 @@ from conversation.service import ConversationService
 from conversation.storage.postgres import PostgresConversationStore
 from llm.config import LLMConfig
 from llm.interfaces import ChatCompletionResult, ChatMessageParam
+from memory.models import MemoryRecord, MemorySourceRef
+from memory.reconciliation import MemoryWriteOperation, MemoryWritePlan
 from memory import (
     MemoryRuntime,
     MemoryDebugRecorder,
@@ -35,6 +37,7 @@ def main() -> int:
         test_prepare_lazily_restores_latest_active_context,
         test_persisted_memory_debug_trace_survives_restart,
         test_checkpoint_memory_filters_future_records,
+        test_checkpoint_memory_replays_update_and_invalidate_revisions,
         test_http_checkpoint_and_branch_routes,
     ]
     for test in tests:
@@ -273,6 +276,130 @@ def test_checkpoint_memory_filters_future_records(database_url: str) -> None:
         _cleanup(database_url, user.id)
 
 
+def test_checkpoint_memory_replays_update_and_invalidate_revisions(
+    database_url: str,
+) -> None:
+    entity = _fixed_record(
+        "ent_user_revision",
+        "entity",
+        "用户",
+        {"entity_type": "person", "candidate_client_id": "cand_user"},
+    )
+    less_sugar = _fixed_record(
+        "prop_sugar_revision",
+        "property",
+        "用户喜欢少糖",
+        {
+            "property_type": "preference",
+            "entity_client_id": "cand_user",
+            "candidate_client_id": "cand_sugar",
+        },
+    )
+    no_sugar = _fixed_record(
+        "prop_sugar_revision",
+        "property",
+        "用户喜欢无糖",
+        {
+            "property_type": "preference",
+            "attached_to_record_id": "ent_user_revision",
+            "candidate_client_id": "cand_sugar_update",
+        },
+    )
+    invalidate_candidate = _fixed_record(
+        "prop_sugar_revision",
+        "property",
+        "用户不再记录糖偏好",
+        {"candidate_client_id": "cand_sugar_invalidate"},
+    )
+    reconciler = _SequenceReconciler(
+        [
+            MemoryWritePlan(
+                operations=[
+                    MemoryWriteOperation(
+                        action="create",
+                        candidate_id="cand_user",
+                        candidate_type="entity",
+                        candidate_text=entity.text,
+                        record=entity,
+                        reason="seed entity",
+                    ),
+                    MemoryWriteOperation(
+                        action="attach",
+                        candidate_id="cand_sugar",
+                        candidate_type="property",
+                        candidate_text=less_sugar.text,
+                        record=less_sugar,
+                        target_candidate_id="cand_user",
+                        relation_type="has_property",
+                        reason="seed property",
+                    ),
+                ],
+                metadata={"reconciler": "sequence"},
+            ),
+            MemoryWritePlan(
+                operations=[
+                    MemoryWriteOperation(
+                        action="update",
+                        candidate_id="cand_sugar_update",
+                        candidate_type="property",
+                        candidate_text=no_sugar.text,
+                        record=no_sugar,
+                        existing_record_id="prop_sugar_revision",
+                        replacement=no_sugar,
+                        reason="replace sugar preference",
+                    )
+                ],
+                metadata={"reconciler": "sequence"},
+            ),
+            MemoryWritePlan(
+                operations=[
+                    MemoryWriteOperation(
+                        action="invalidate",
+                        candidate_id="cand_sugar_invalidate",
+                        candidate_type="property",
+                        candidate_text=invalidate_candidate.text,
+                        record=invalidate_candidate,
+                        invalidated_record_ids=["prop_sugar_revision"],
+                        reason="remove sugar preference",
+                    )
+                ],
+                metadata={"reconciler": "sequence"},
+            ),
+        ]
+    )
+    service, _chat_client = _service(
+        database_url,
+        [[entity, less_sugar], [no_sugar], [invalidate_candidate]],
+        reconciler=reconciler,
+    )
+    user = service.create_user(USERNAME)
+    session = service.start_session(user.id)
+
+    try:
+        service.send_message(session.id, "less sugar")
+        first_checkpoint = service.list_checkpoints(session.id)[-1]
+        service.send_message(session.id, "no sugar")
+        second_checkpoint = service.list_checkpoints(session.id)[-1]
+        service.send_message(session.id, "forget sugar")
+        third_checkpoint = service.list_checkpoints(session.id)[-1]
+
+        first_memory = service.get_checkpoint_memory(first_checkpoint.id)
+        second_memory = service.get_checkpoint_memory(second_checkpoint.id)
+        third_memory = service.get_checkpoint_memory(third_checkpoint.id)
+        first_props = _checkpoint_property_contents(first_memory)
+        second_props = _checkpoint_property_contents(second_memory)
+        third_props = _checkpoint_property_contents(third_memory)
+        diff = service.diff_checkpoints(first_checkpoint.id, second_checkpoint.id)
+
+        assert "用户喜欢少糖" in first_props
+        assert "用户喜欢无糖" in second_props
+        assert "用户喜欢少糖" not in second_props
+        assert "用户喜欢无糖" not in third_props
+        assert any(item["id"] == "prop_sugar_revision" for item in diff["updated"])
+    finally:
+        _cleanup(database_url, user.id)
+
+
 def test_http_checkpoint_and_branch_routes(database_url: str) -> None:
     service, _chat_client = _service(
         database_url,
@@ -335,6 +462,7 @@ def _service(
     database_url: str,
     memory_batches,
     extractor=None,
+    reconciler=None,
 ) -> tuple[ConversationService, "_StaticChatClient"]:
     store = PostgresConversationStore(database_url)
     store.checkpoints.fail_incomplete_turns()
@@ -346,6 +474,7 @@ def _service(
             persistent,
             search=PostgresNormalizedMemorySearch(persistent),
         ),
+        reconciler=reconciler,
         write_applier=PersistentMemoryWritePlanApplier(persistent),
         debug_recorder=debug_recorder,
     )
@@ -372,6 +501,53 @@ def _cleanup(database_url: str, user_id: str) -> None:
         user = store.find_user_by_username(USERNAME)
         if user is not None:
             store.delete_user(user.id, cascade=True)
+
+
+class _SequenceReconciler:
+    def __init__(self, plans: list[MemoryWritePlan]) -> None:
+        self._plans = list(plans)
+        self._index = 0
+
+    def reconcile(self, request) -> MemoryWritePlan:
+        if self._index >= len(self._plans):
+            return MemoryWritePlan(metadata={"reconciler": "sequence"})
+        plan = self._plans[self._index]
+        self._index += 1
+        return plan
+
+
+def _fixed_record(
+    record_id: str,
+    memory_type: str,
+    text: str,
+    metadata: dict[str, object] | None = None,
+) -> MemoryRecord:
+    return MemoryRecord(
+        id=record_id,
+        memory_type=memory_type,
+        text=text,
+        source_refs=[
+            MemorySourceRef(
+                source_type="message",
+                source_id="msg_revision_test",
+            )
+        ],
+        metadata=dict(metadata or {}),
+    )
+
+
+def _checkpoint_property_contents(snapshot: dict) -> list[str]:
+    normalized = snapshot.get("normalized_memories")
+    if not isinstance(normalized, dict):
+        return []
+    properties = normalized.get("properties")
+    if not isinstance(properties, list):
+        return []
+    result: list[str] = []
+    for item in properties:
+        if isinstance(item, dict) and isinstance(item.get("content"), str):
+            result.append(item["content"])
+    return result
 
 
 class _CapturingExtractor:

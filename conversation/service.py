@@ -190,6 +190,7 @@ class ConversationService:
             max_context_messages=max_context_messages,
             metadata=metadata,
         )
+        session.root_session_id = session.id
         return self.store.create_session(session)
 
     def rename_session(self, session_id: str, title: str) -> ChatSession:
@@ -288,6 +289,7 @@ class ConversationService:
                 session,
                 user_message,
                 include_unpersisted_user_message=True,
+                base_checkpoint_id=base_checkpoint.id if base_checkpoint else None,
             )
             self._apply_memory_context_actions(memory_prepare.context_actions)
             llm_messages = self._build_llm_context_for_pending_user(
@@ -409,53 +411,51 @@ class ConversationService:
                         sequence=assistant_sequence,
                     )
 
-                    try:
-                        with connection.transaction():
-                            base_applier = getattr(
-                                self.memory_system,
-                                "write_applier",
-                                None,
-                            )
-                            if not isinstance(
-                                base_applier,
-                                PersistentMemoryWritePlanApplier,
-                            ) or not isinstance(
-                                base_applier.repository,
-                                PostgresPersistentMemoryRepository,
-                            ):
-                                raise TypeError(
-                                    "PostgreSQL memory commit requires "
-                                    "PersistentMemoryWritePlanApplier"
-                                )
-                            write_applier = PersistentMemoryWritePlanApplier(
-                                _ConnectionPersistentMemoryRepository(
-                                    base_applier.repository,
-                                    connection,
-                                ),
-                                adapter=base_applier.adapter,
-                            )
-                            memory_commit = self.memory_system.commit_turn_with_writers(
-                                MemoryTurnCommitInput(
-                                    snapshot=memory_prepare.snapshot,
-                                    assistant_message=self._to_memory_input_message(
-                                        assistant_message
-                                    ),
-                                    metadata={
-                                        "source": "conversation_service",
-                                        "created_turn_id": turn.id,
-                                        "created_checkpoint_id": checkpoint.id,
-                                        "created_checkpoint_sequence": assistant_sequence,
-                                    },
-                                ),
-                                write_applier=write_applier,
-                            )
-                            memory_status = "committed"
-                    except Exception as error:
-                        LOGGER.warning("Memory turn commit failed: %s", error)
-                        memory_status = "failed"
-                        memory_commit = MemoryTurnResult(
-                            metadata={"error": str(error)}
+                    with connection.transaction():
+                        base_applier = getattr(
+                            self.memory_system,
+                            "write_applier",
+                            None,
                         )
+                        if not isinstance(
+                            base_applier,
+                            PersistentMemoryWritePlanApplier,
+                        ) or not isinstance(
+                            base_applier.repository,
+                            PostgresPersistentMemoryRepository,
+                        ):
+                            raise TypeError(
+                                "PostgreSQL memory commit requires "
+                                "PersistentMemoryWritePlanApplier"
+                            )
+                        write_applier = PersistentMemoryWritePlanApplier(
+                            _ConnectionPersistentMemoryRepository(
+                                base_applier.repository,
+                                connection,
+                            ),
+                            adapter=base_applier.adapter,
+                        )
+                        memory_commit = self.memory_system.commit_turn_with_writers(
+                            MemoryTurnCommitInput(
+                                snapshot=memory_prepare.snapshot,
+                                assistant_message=self._to_memory_input_message(
+                                    assistant_message
+                                ),
+                                metadata={
+                                    "source": "conversation_service",
+                                    "base_checkpoint_id": (
+                                        base_checkpoint.id
+                                        if base_checkpoint is not None
+                                        else None
+                                    ),
+                                    "created_turn_id": turn.id,
+                                    "created_checkpoint_id": checkpoint.id,
+                                    "created_checkpoint_sequence": assistant_sequence,
+                                },
+                            ),
+                            write_applier=write_applier,
+                        )
+                        memory_status = "committed"
 
                     checkpoint = ConversationCheckpoint(
                         **{
@@ -474,6 +474,16 @@ class ConversationService:
                     self.store.checkpoints.create_checkpoint_in_connection(
                         connection,
                         checkpoint,
+                    )
+                    connection.execute(
+                        """
+                        UPDATE sessions
+                        SET head_checkpoint_id = %s,
+                            root_session_id = COALESCE(root_session_id, id),
+                            updated_at = %s
+                        WHERE id = %s
+                        """,
+                        (checkpoint.id, utc_now(), session.id),
                     )
                     self._persist_memory_debug_trace_in_connection(
                         connection,
@@ -502,10 +512,6 @@ class ConversationService:
                         ),
                         memory_status=memory_status,
                         metadata={"checkpoint_sequence": assistant_sequence},
-                    )
-                    connection.execute(
-                        "UPDATE sessions SET updated_at = %s WHERE id = %s",
-                        (utc_now(), session.id),
                     )
             except Exception:
                 self._restore_active_context(memory_prepare.snapshot)
@@ -594,6 +600,10 @@ class ConversationService:
             temperature=parent_session.temperature,
             max_context_messages=parent_session.max_context_messages,
             context_start_index=parent_session.context_start_index,
+            head_checkpoint_id=checkpoint.id,
+            root_session_id=root_session_id,
+            parent_session_id=parent_session.id,
+            base_checkpoint_id=checkpoint.id,
             metadata={
                 **dict(parent_session.metadata),
                 "branch": {
@@ -699,19 +709,177 @@ class ConversationService:
         checkpoint_id: str,
         limit: int = 100,
     ) -> dict[str, Any]:
+        from memory.persistence.postgres import PostgresPersistentMemoryRepository
+
         checkpoint = self.store.checkpoints.get_checkpoint(checkpoint_id)
         if checkpoint is None:
             raise ValueError(f"Unknown checkpoint_id: {checkpoint_id}")
         session = self._require_session(checkpoint.session_id, allow_archived=True)
-        snapshot = self.store.debug.checkpoint_memory_snapshot(
-            user_id=session.user_id,
-            scopes=self._checkpoint_visible_session_scopes(checkpoint),
-            limit=limit,
+        repository = PostgresPersistentMemoryRepository(
+            database=self.store.database,
+            ensure_schema=False,
         )
+        selected_limit = max(0, limit)
+        events = repository.list_events(
+            user_id=session.user_id,
+            session_id=session.id,
+            limit=selected_limit,
+            as_of_checkpoint_id=checkpoint.id,
+        )
+        descriptions = repository.list_descriptions(
+            user_id=session.user_id,
+            session_id=session.id,
+            limit=selected_limit,
+            as_of_checkpoint_id=checkpoint.id,
+        )
+        entities = repository.list_entities(
+            user_id=session.user_id,
+            session_id=session.id,
+            limit=selected_limit,
+            as_of_checkpoint_id=checkpoint.id,
+        )
+        properties = repository.list_properties(
+            user_id=session.user_id,
+            session_id=session.id,
+            limit=selected_limit,
+            as_of_checkpoint_id=checkpoint.id,
+        )
+        links = repository.list_links(
+            user_id=session.user_id,
+            limit=selected_limit,
+            as_of_checkpoint_id=checkpoint.id,
+        )
+        time_refs = repository.list_time_refs(
+            user_id=session.user_id,
+            session_id=session.id,
+            limit=selected_limit,
+            as_of_checkpoint_id=checkpoint.id,
+        )
+        time_links = repository.list_time_links(
+            limit=selected_limit,
+            as_of_checkpoint_id=checkpoint.id,
+        )
+        normalized_memories = {
+            "events": [item.to_record() for item in events],
+            "descriptions": [item.to_record() for item in descriptions],
+            "entities": [item.to_record() for item in entities],
+            "properties": [item.to_record() for item in properties],
+            "links": [item.to_record() for item in links],
+            "time_refs": [item.to_record() for item in time_refs],
+            "time_links": [item.to_record() for item in time_links],
+        }
         return {
             "checkpoint": checkpoint.to_record(),
             "active_memory_snapshot": dict(checkpoint.active_memory_snapshot),
-            **snapshot,
+            "scope": {
+                "user_id": session.user_id,
+                "as_of_checkpoint_id": checkpoint.id,
+                "visible_session_scopes": self._checkpoint_visible_session_scopes(
+                    checkpoint
+                ),
+                "limit": selected_limit,
+            },
+            "normalized_memories": normalized_memories,
+        }
+
+    def diff_checkpoints(
+        self,
+        left_checkpoint_id: str,
+        right_checkpoint_id: str,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        from memory.persistence.postgres import PostgresPersistentMemoryRepository
+
+        left_checkpoint = self.store.checkpoints.get_checkpoint(left_checkpoint_id)
+        right_checkpoint = self.store.checkpoints.get_checkpoint(right_checkpoint_id)
+        if left_checkpoint is None:
+            raise ValueError(f"Unknown checkpoint_id: {left_checkpoint_id}")
+        if right_checkpoint is None:
+            raise ValueError(f"Unknown checkpoint_id: {right_checkpoint_id}")
+        left_session = self._require_session(
+            left_checkpoint.session_id,
+            allow_archived=True,
+        )
+        right_session = self._require_session(
+            right_checkpoint.session_id,
+            allow_archived=True,
+        )
+        if left_session.user_id != right_session.user_id:
+            raise ValueError("Cannot diff checkpoints from different users")
+        repository = PostgresPersistentMemoryRepository(
+            database=self.store.database,
+            ensure_schema=False,
+        )
+        selected_limit = max(0, limit)
+        left_records = _records_by_id(
+            repository.list_records_as_of(
+                left_checkpoint_id,
+                user_id=left_session.user_id,
+                session_id=left_session.id,
+                limit=selected_limit,
+                include_inactive=True,
+            )
+        )
+        right_records = _records_by_id(
+            repository.list_records_as_of(
+                right_checkpoint_id,
+                user_id=right_session.user_id,
+                session_id=right_session.id,
+                limit=selected_limit,
+                include_inactive=True,
+            )
+        )
+        active_left = {
+            record_id: record
+            for record_id, record in left_records.items()
+            if _record_status(record) == "active"
+        }
+        active_right = {
+            record_id: record
+            for record_id, record in right_records.items()
+            if _record_status(record) == "active"
+        }
+        created = [
+            _diff_record(record_id, None, right_records[record_id])
+            for record_id in sorted(active_right.keys() - active_left.keys())
+        ]
+        merged = [
+            _diff_record(
+                record_id,
+                active_left[record_id],
+                right_records.get(record_id),
+            )
+            for record_id in sorted(active_left.keys() & right_records.keys())
+            if _record_status(right_records[record_id]) == "merged"
+        ]
+        invalidated = [
+            _diff_record(
+                record_id,
+                active_left[record_id],
+                right_records.get(record_id),
+            )
+            for record_id in sorted(active_left.keys() & right_records.keys())
+            if _record_status(right_records[record_id])
+            in {"invalidated", "deleted", "archived", "expired"}
+        ]
+        updated = [
+            _diff_record(record_id, active_left[record_id], active_right[record_id])
+            for record_id in sorted(active_left.keys() & active_right.keys())
+            if _record_payload(active_left[record_id])
+            != _record_payload(active_right[record_id])
+        ]
+        removed = [
+            _diff_record(record_id, active_left[record_id], None)
+            for record_id in sorted(active_left.keys() - right_records.keys())
+        ]
+        return {
+            "left_checkpoint_id": left_checkpoint_id,
+            "right_checkpoint_id": right_checkpoint_id,
+            "created": created,
+            "updated": updated,
+            "invalidated": invalidated,
+            "merged": merged,
+            "removed": removed,
         }
 
     def memory_debug_trace_for_message(
@@ -731,11 +899,13 @@ class ConversationService:
         session: ChatSession,
         user_message: Message,
         include_unpersisted_user_message: bool = False,
+        base_checkpoint_id: str | None = None,
     ) -> MemoryTurnPrepareResult:
         turn = self._build_memory_turn_input(
             session,
             user_message,
             include_unpersisted_user_message=include_unpersisted_user_message,
+            base_checkpoint_id=base_checkpoint_id,
         )
         try:
             return self.memory_system.prepare_turn(turn)
@@ -758,6 +928,7 @@ class ConversationService:
         session: ChatSession,
         user_message: Message,
         include_unpersisted_user_message: bool = False,
+        base_checkpoint_id: str | None = None,
     ) -> MemoryTurnInput:
         messages = self.store.list_messages(session.id)
         if include_unpersisted_user_message:
@@ -785,6 +956,8 @@ class ConversationService:
             active_memory_context=active_memory_context,
             metadata={
                 "visible_session_scopes": self._visible_session_scopes(session.id),
+                "base_checkpoint_id": base_checkpoint_id,
+                "as_of_checkpoint_id": base_checkpoint_id,
             },
         )
 
@@ -1256,6 +1429,69 @@ def _write_action_counts(operations: list[Any]) -> dict[str, int]:
     return counts
 
 
+def _flatten_checkpoint_memory(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    normalized = _dict(snapshot.get("normalized_memories"))
+    records: dict[str, dict[str, Any]] = {}
+    for key, value in normalized.items():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            record_id = item.get("id")
+            if isinstance(record_id, str):
+                records[record_id] = {"memory_bucket": key, **item}
+    return records
+
+
+def _records_by_id(records: list[Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if hasattr(record, "to_record"):
+            item = record.to_record()
+        elif isinstance(record, dict):
+            item = dict(record)
+        else:
+            continue
+        record_id = item.get("id")
+        if isinstance(record_id, str):
+            result[record_id] = item
+    return result
+
+
+def _record_status(record: dict[str, Any] | None) -> str:
+    return str(_record_metadata(record).get("status") or "active")
+
+
+def _record_payload(record: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(record)
+    metadata = dict(_record_metadata(payload))
+    for key in (
+        "revision_id",
+        "revision_checkpoint_id",
+        "revision_turn_id",
+        "operation_index",
+    ):
+        metadata.pop(key, None)
+    payload["metadata"] = metadata
+    return payload
+
+
+def _diff_record(
+    record_id: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {"id": record_id, "before": before, "after": after}
+
+
+def _record_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    metadata = value.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
 class _ConnectionPersistentMemoryRepository:
     def __init__(self, repository: Any, connection: Any) -> None:
         self.repository = repository
@@ -1263,6 +1499,16 @@ class _ConnectionPersistentMemoryRepository:
 
     def save_bundle(self, bundle):
         return self.repository.save_bundle_in_connection(self.connection, bundle)
+
+    def update_object_status(self, *args, **kwargs):
+        update_in_connection = getattr(
+            self.repository,
+            "update_object_status_in_connection",
+            None,
+        )
+        if callable(update_in_connection):
+            return update_in_connection(self.connection, *args, **kwargs)
+        return self.repository.update_object_status(*args, **kwargs)
 
     def __getattr__(self, name: str):
         return getattr(self.repository, name)

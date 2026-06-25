@@ -42,6 +42,7 @@ class NormalizedMemoryHydrator:
         request: MemoryRetrievalRequest,
         hits: Sequence[MemorySearchHit],
     ) -> HydratedMemoryViews:
+        as_of_checkpoint_id = _as_of_checkpoint_id(request)
         pool_limit = max(self.pool_limit, (request.limit or self.default_limit) * 4)
         selected_view_refs: list[tuple[str, str]] = []
         seed_descriptions: list[PersistentDescription] = []
@@ -52,40 +53,64 @@ class NormalizedMemoryHydrator:
         for hit in hits:
             ref = hit.object_ref
             if ref.object_type == "event":
-                event = self.repository.get_event(ref.object_id)
+                event = _get_event(self.repository, ref.object_id, as_of_checkpoint_id)
                 if event:
                     events_by_id[event.id] = event
                     _append_view_ref(selected_view_refs, "event", event.id)
             elif ref.object_type == "description":
-                description = self.repository.get_description(ref.object_id)
+                description = _get_description(
+                    self.repository,
+                    ref.object_id,
+                    as_of_checkpoint_id,
+                )
                 if not description:
                     continue
                 seed_descriptions.append(description)
                 if description.event_id:
-                    event = self.repository.get_event(description.event_id)
+                    event = _get_event(
+                        self.repository,
+                        description.event_id,
+                        as_of_checkpoint_id,
+                    )
                     if event:
                         events_by_id[event.id] = event
                         _append_view_ref(selected_view_refs, "event", event.id)
             elif ref.object_type == "entity":
-                entity = self.repository.get_entity(ref.object_id)
+                entity = _get_entity(self.repository, ref.object_id, as_of_checkpoint_id)
                 if entity:
                     entities_by_id[entity.id] = entity
                     _append_view_ref(selected_view_refs, "entity", entity.id)
             elif ref.object_type == "property":
-                memory_property = self.repository.get_property(ref.object_id)
+                memory_property = _get_property(
+                    self.repository,
+                    ref.object_id,
+                    as_of_checkpoint_id,
+                )
                 if not memory_property:
                     continue
                 seed_properties.append(memory_property)
                 if memory_property.entity_id:
-                    entity = self.repository.get_entity(memory_property.entity_id)
+                    entity = _get_entity(
+                        self.repository,
+                        memory_property.entity_id,
+                        as_of_checkpoint_id,
+                    )
                     if entity:
                         entities_by_id[entity.id] = entity
                         _append_view_ref(selected_view_refs, "entity", entity.id)
 
         event_ids = _ids(events_by_id.keys())
         entity_ids = _ids(entities_by_id.keys())
-        descriptions = self.repository.list_descriptions(event_ids=event_ids)
-        properties = self.repository.list_properties(entity_ids=entity_ids)
+        descriptions = _list_descriptions(
+            self.repository,
+            as_of_checkpoint_id,
+            event_ids=event_ids,
+        )
+        properties = _list_properties(
+            self.repository,
+            as_of_checkpoint_id,
+            entity_ids=entity_ids,
+        )
         descriptions = _merge_descriptions(seed_descriptions, descriptions)
         properties = _merge_properties(seed_properties, properties)
 
@@ -93,21 +118,31 @@ class NormalizedMemoryHydrator:
         entity_refs = [
             PersistentObjectRef("entity", entity_id) for entity_id in entity_ids
         ]
-        links = self.repository.list_links(
+        links = _list_links(
+            self.repository,
+            as_of_checkpoint_id,
             object_refs=[*event_refs, *entity_refs],
             user_id=request.user_id,
             limit=pool_limit * 4,
         )
 
-        self._hydrate_linked_entities(links, entities_by_id)
-        self._hydrate_linked_events(links, events_by_id)
+        self._hydrate_linked_entities(links, entities_by_id, as_of_checkpoint_id)
+        self._hydrate_linked_events(links, events_by_id, as_of_checkpoint_id)
 
         all_entity_ids = _ids(entities_by_id.keys())
         all_event_ids = _ids(events_by_id.keys())
         if set(all_entity_ids) != set(entity_ids):
-            properties = self.repository.list_properties(entity_ids=all_entity_ids)
+            properties = _list_properties(
+                self.repository,
+                as_of_checkpoint_id,
+                entity_ids=all_entity_ids,
+            )
         if set(all_event_ids) != set(event_ids):
-            descriptions = self.repository.list_descriptions(event_ids=all_event_ids)
+            descriptions = _list_descriptions(
+                self.repository,
+                as_of_checkpoint_id,
+                event_ids=all_event_ids,
+            )
 
         descriptions_by_event = _group_by_event(descriptions)
         properties_by_entity = _group_by_entity(properties)
@@ -119,14 +154,20 @@ class NormalizedMemoryHydrator:
             entities_by_id.values(),
             properties,
         )
-        time_links = self.repository.list_time_links(
+        time_links = _list_time_links(
+            self.repository,
+            as_of_checkpoint_id,
             target_refs=target_refs,
             limit=pool_limit * 6,
         )
         time_ref_ids = _ids(time_link.time_ref_id for time_link in time_links)
         time_refs = {
             time_ref.id: time_ref
-            for time_ref in self.repository.get_time_refs(time_ref_ids)
+            for time_ref in _get_time_refs(
+                self.repository,
+                time_ref_ids,
+                as_of_checkpoint_id=as_of_checkpoint_id,
+            )
             if time_ref.id
         }
         time_links_by_target = _group_time_links_by_target(time_links, time_refs)
@@ -161,12 +202,17 @@ class NormalizedMemoryHydrator:
         self,
         links: Sequence[PersistentLink],
         entities_by_id: dict[str | None, PersistentEntity],
+        as_of_checkpoint_id: str | None,
     ) -> None:
         for link in links:
             for ref in (link.from_ref, link.to_ref):
                 if ref.object_type != "entity" or ref.object_id in entities_by_id:
                     continue
-                entity = self.repository.get_entity(ref.object_id)
+                entity = _get_entity(
+                    self.repository,
+                    ref.object_id,
+                    as_of_checkpoint_id,
+                )
                 if entity:
                     entities_by_id[entity.id] = entity
 
@@ -174,12 +220,17 @@ class NormalizedMemoryHydrator:
         self,
         links: Sequence[PersistentLink],
         events_by_id: dict[str | None, PersistentEvent],
+        as_of_checkpoint_id: str | None,
     ) -> None:
         for link in links:
             for ref in (link.from_ref, link.to_ref):
                 if ref.object_type != "event" or ref.object_id in events_by_id:
                     continue
-                event = self.repository.get_event(ref.object_id)
+                event = _get_event(
+                    self.repository,
+                    ref.object_id,
+                    as_of_checkpoint_id,
+                )
                 if event:
                     events_by_id[event.id] = event
 
@@ -250,6 +301,107 @@ def _group_by_event(
         if description.event_id:
             grouped.setdefault(description.event_id, []).append(description)
     return grouped
+
+
+def _get_event(repository, object_id: str, as_of_checkpoint_id: str | None):
+    if as_of_checkpoint_id is None:
+        return repository.get_event(object_id)
+    try:
+        return repository.get_event(object_id, as_of_checkpoint_id)
+    except TypeError:
+        return repository.get_event(object_id)
+
+
+def _get_description(repository, object_id: str, as_of_checkpoint_id: str | None):
+    if as_of_checkpoint_id is None:
+        return repository.get_description(object_id)
+    try:
+        return repository.get_description(object_id, as_of_checkpoint_id)
+    except TypeError:
+        return repository.get_description(object_id)
+
+
+def _get_entity(repository, object_id: str, as_of_checkpoint_id: str | None):
+    if as_of_checkpoint_id is None:
+        return repository.get_entity(object_id)
+    try:
+        return repository.get_entity(object_id, as_of_checkpoint_id)
+    except TypeError:
+        return repository.get_entity(object_id)
+
+
+def _get_property(repository, object_id: str, as_of_checkpoint_id: str | None):
+    if as_of_checkpoint_id is None:
+        return repository.get_property(object_id)
+    try:
+        return repository.get_property(object_id, as_of_checkpoint_id)
+    except TypeError:
+        return repository.get_property(object_id)
+
+
+def _list_descriptions(repository, as_of_checkpoint_id: str | None, **kwargs):
+    if as_of_checkpoint_id is not None:
+        try:
+            return repository.list_descriptions(
+                **kwargs,
+                as_of_checkpoint_id=as_of_checkpoint_id,
+            )
+        except TypeError:
+            pass
+    return repository.list_descriptions(**kwargs)
+
+
+def _list_properties(repository, as_of_checkpoint_id: str | None, **kwargs):
+    if as_of_checkpoint_id is not None:
+        try:
+            return repository.list_properties(
+                **kwargs,
+                as_of_checkpoint_id=as_of_checkpoint_id,
+            )
+        except TypeError:
+            pass
+    return repository.list_properties(**kwargs)
+
+
+def _list_links(repository, as_of_checkpoint_id: str | None, **kwargs):
+    if as_of_checkpoint_id is not None:
+        try:
+            return repository.list_links(
+                **kwargs,
+                as_of_checkpoint_id=as_of_checkpoint_id,
+            )
+        except TypeError:
+            pass
+    return repository.list_links(**kwargs)
+
+
+def _list_time_links(repository, as_of_checkpoint_id: str | None, **kwargs):
+    if as_of_checkpoint_id is not None:
+        try:
+            return repository.list_time_links(
+                **kwargs,
+                as_of_checkpoint_id=as_of_checkpoint_id,
+            )
+        except TypeError:
+            pass
+    return repository.list_time_links(**kwargs)
+
+
+def _get_time_refs(
+    repository,
+    time_ref_ids: Sequence[str],
+    *,
+    as_of_checkpoint_id: str | None,
+):
+    if as_of_checkpoint_id is not None:
+        try:
+            return repository.get_time_refs(
+                time_ref_ids,
+                as_of_checkpoint_id=as_of_checkpoint_id,
+            )
+        except TypeError:
+            pass
+    return repository.get_time_refs(time_ref_ids)
 
 
 def _group_by_entity(
@@ -356,3 +508,21 @@ def _merge_properties(
 
 def _ids(values: Iterable[str | None]) -> list[str]:
     return [value for value in values if value]
+
+
+def _as_of_checkpoint_id(request: MemoryRetrievalRequest) -> str | None:
+    value = request.metadata.get("as_of_checkpoint_id")
+    if isinstance(value, str) and value:
+        return value
+    value = request.metadata.get("base_checkpoint_id")
+    if isinstance(value, str) and value:
+        return value
+    raw_scopes = request.metadata.get("visible_session_scopes")
+    if isinstance(raw_scopes, list):
+        for scope in reversed(raw_scopes):
+            if not isinstance(scope, dict):
+                continue
+            scope_value = scope.get("as_of_checkpoint_id")
+            if isinstance(scope_value, str) and scope_value:
+                return scope_value
+    return None

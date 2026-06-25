@@ -32,10 +32,12 @@ class PostgresSessionRepository:
                 """
                 INSERT INTO sessions (
                     id, user_id, title, system_prompt, model, temperature,
-                    max_context_messages, context_start_index, metadata,
-                    created_at, updated_at, archived_at
+                    max_context_messages, context_start_index,
+                    head_checkpoint_id, root_session_id, parent_session_id,
+                    base_checkpoint_id, metadata, created_at, updated_at,
+                    archived_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     session.id,
@@ -46,6 +48,10 @@ class PostgresSessionRepository:
                     session.temperature,
                     session.max_context_messages,
                     session.context_start_index,
+                    session.head_checkpoint_id,
+                    session.root_session_id,
+                    session.parent_session_id,
+                    session.base_checkpoint_id,
                     Jsonb(session.metadata),
                     session.created_at,
                     session.updated_at,
@@ -74,6 +80,10 @@ class PostgresSessionRepository:
                     temperature = %s,
                     max_context_messages = %s,
                     context_start_index = %s,
+                    head_checkpoint_id = %s,
+                    root_session_id = %s,
+                    parent_session_id = %s,
+                    base_checkpoint_id = %s,
                     metadata = %s,
                     created_at = %s,
                     updated_at = %s,
@@ -88,6 +98,10 @@ class PostgresSessionRepository:
                     session.temperature,
                     session.max_context_messages,
                     session.context_start_index,
+                    session.head_checkpoint_id,
+                    session.root_session_id,
+                    session.parent_session_id,
+                    session.base_checkpoint_id,
                     Jsonb(session.metadata),
                     session.created_at,
                     session.updated_at,

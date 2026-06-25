@@ -62,6 +62,10 @@ class ChatSession:
     temperature: float | None = None
     max_context_messages: int | None = None
     context_start_index: int = 0
+    head_checkpoint_id: str | None = None
+    root_session_id: str | None = None
+    parent_session_id: str | None = None
+    base_checkpoint_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -77,6 +81,10 @@ class ChatSession:
         temperature: float | None = None,
         max_context_messages: int | None = None,
         context_start_index: int = 0,
+        head_checkpoint_id: str | None = None,
+        root_session_id: str | None = None,
+        parent_session_id: str | None = None,
+        base_checkpoint_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> "ChatSession":
         now = utc_now()
@@ -89,6 +97,10 @@ class ChatSession:
             temperature=temperature,
             max_context_messages=max_context_messages,
             context_start_index=context_start_index,
+            head_checkpoint_id=head_checkpoint_id,
+            root_session_id=root_session_id,
+            parent_session_id=parent_session_id,
+            base_checkpoint_id=base_checkpoint_id,
             metadata=metadata or {},
             created_at=now,
             updated_at=now,
