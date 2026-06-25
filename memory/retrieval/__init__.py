@@ -7,6 +7,7 @@ from .context.normalized import (
     NormalizedMemoryContextRetriever,
     NormalizedMemoryRanker,
     NormalizedMemorySearch,
+    PostgresHybridMemorySearch,
     PostgresNormalizedMemorySearch,
 )
 from .reconciliation import (
@@ -25,6 +26,7 @@ __all__ = [
     "NormalizedMemoryContextRetriever",
     "NormalizedMemoryRanker",
     "NormalizedMemorySearch",
+    "PostgresHybridMemorySearch",
     "PostgresNormalizedMemorySearch",
     "RelatedMemory",
     "SimpleMemoryContextRenderer",

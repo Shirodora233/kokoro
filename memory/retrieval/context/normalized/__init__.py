@@ -1,5 +1,6 @@
 """Normalized prompt context retrieval."""
 
+from .hybrid_search import PostgresHybridMemorySearch
 from .hydrator import NormalizedMemoryHydrator
 from .models import (
     HydratedMemoryViews,
@@ -23,5 +24,6 @@ __all__ = [
     "NormalizedMemoryRanker",
     "NormalizedMemorySearch",
     "NormalizedSelectedMemoryView",
+    "PostgresHybridMemorySearch",
     "PostgresNormalizedMemorySearch",
 ]

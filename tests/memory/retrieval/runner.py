@@ -57,6 +57,7 @@ def main() -> int:
         test_normalized_retrieval_renders_event_view_without_raw_links,
         test_normalized_retrieval_query_matches_entity_property,
         test_normalized_search_hydrates_description_hit_without_recent_pool,
+        test_normalized_hydration_filters_future_checkpoint_children,
         test_normalized_ranker_prioritizes_session_high_quality_hit,
     ]
     for test in tests:
@@ -484,6 +485,83 @@ def test_normalized_search_hydrates_description_hit_without_recent_pool() -> Non
     assert result.metadata["selected_view_kinds"] == ["event"]
 
 
+def test_normalized_hydration_filters_future_checkpoint_children() -> None:
+    repository = _NormalizedFixtureRepository()
+    repository.bundle.descriptions.append(
+        PersistentDescription(
+            id="desc_future",
+            event_id="evt_visit",
+            content="未来 checkpoint 才补充的复诊细节，不应在旧分支出现。",
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            created_checkpoint_sequence=3,
+        )
+    )
+    repository.bundle.properties.append(
+        PersistentProperty(
+            id="prop_future",
+            entity_id="ent_doctor",
+            content="未来 checkpoint 才补充的医生偏好，不应在旧分支出现。",
+            property_type="preference",
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            created_checkpoint_sequence=3,
+        )
+    )
+    repository.bundle.links.append(
+        PersistentLink(
+            id="link_future",
+            from_ref=PersistentObjectRef("event", "evt_visit"),
+            to_ref=PersistentObjectRef("entity", "ent_doctor"),
+            relation_type="future_relation",
+            created_checkpoint_sequence=3,
+            metadata={"user_id": USER_ID, "session_id": SESSION_ID},
+        )
+    )
+
+    result = NormalizedMemoryContextRetriever(
+        repository,
+        search=_StaticNormalizedSearch(
+            [
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("event", "evt_visit"),
+                    score=0.9,
+                    reason="event_text_match",
+                    matched_text="林医生复诊安排",
+                ),
+                MemorySearchHit(
+                    object_ref=MemoryObjectRef("entity", "ent_doctor"),
+                    score=0.8,
+                    reason="entity_text_match",
+                    matched_text="林医生",
+                ),
+            ]
+        ),
+    ).retrieve(
+        MemoryRetrievalRequest(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            query="林医生",
+            limit=4,
+            metadata={
+                "visible_session_scopes": [
+                    {
+                        "session_id": SESSION_ID,
+                        "max_checkpoint_sequence": 2,
+                    }
+                ]
+            },
+        )
+    )
+    content = result.memory_context[0].content
+
+    assert "未来 checkpoint" not in content
+    assert "future_relation" not in content
+    assert "Details: 用户计划明天上午十点和林医生复诊，地点在静安门诊。" in content
+    assert "Properties: 林医生是用户此次复诊的医生。" in content
+
+
+
 def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:
     request = MemorySearchRequest(
         user_id=USER_ID,
@@ -509,7 +587,7 @@ def test_normalized_ranker_prioritizes_session_high_quality_hit() -> None:
             ),
             MemorySearchHit(
                 object_ref=MemoryObjectRef("event", "evt_session"),
-                score=0.95,
+                score=1.0,
                 reason="event_text_match",
                 matched_text="林医生复诊安排",
                 metadata={
@@ -671,6 +749,34 @@ def _related_ids(related_records: list[RelatedMemory]) -> set[str]:
     }
 
 
+def _visible(
+    item: object,
+    user_id: str | None,
+    session_id: str | None,
+    visible_session_scopes: list[dict[str, Any]] | None,
+) -> bool:
+    metadata = getattr(item, "metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    item_user_id = getattr(item, "user_id", None) or metadata.get("user_id")
+    if item_user_id is not None and item_user_id != user_id:
+        return False
+    item_session_id = getattr(item, "session_id", None) or metadata.get("session_id")
+    if item_session_id is None:
+        return True
+    scopes = visible_session_scopes or []
+    if not scopes:
+        return item_session_id == session_id
+    for scope in scopes:
+        if scope.get("session_id") != item_session_id:
+            continue
+        max_sequence = scope.get("max_checkpoint_sequence")
+        item_sequence = getattr(item, "created_checkpoint_sequence", None)
+        return not isinstance(max_sequence, int) or item_sequence is None or item_sequence <= max_sequence
+    return False
+
+
+
 def _has_reason(
     result: CandidateRetrievalResult,
     record_id: str,
@@ -825,11 +931,13 @@ class _NormalizedFixtureRepository:
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        visible_session_scopes: list[dict[str, Any]] | None = None,
     ) -> list[PersistentDescription]:
         ids = set(event_ids or [])
         items = [
             item for item in self.bundle.descriptions
-            if not ids or item.event_id in ids
+            if (not ids or item.event_id in ids)
+            and _visible(item, user_id, session_id, visible_session_scopes)
         ]
         return items[:limit]
 
@@ -839,11 +947,13 @@ class _NormalizedFixtureRepository:
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int | None = None,
+        visible_session_scopes: list[dict[str, Any]] | None = None,
     ) -> list[PersistentProperty]:
         ids = set(entity_ids or [])
         items = [
             item for item in self.bundle.properties
-            if not ids or item.entity_id in ids
+            if (not ids or item.entity_id in ids)
+            and _visible(item, user_id, session_id, visible_session_scopes)
         ]
         return items[:limit]
 
@@ -852,15 +962,20 @@ class _NormalizedFixtureRepository:
         object_refs: list[PersistentObjectRef] | None = None,
         user_id: str | None = None,
         limit: int | None = None,
+        session_id: str | None = None,
+        visible_session_scopes: list[dict[str, Any]] | None = None,
     ) -> list[PersistentLink]:
         ref_keys = {
             (ref.object_type, ref.object_id) for ref in object_refs or []
         }
         items = [
             item for item in self.bundle.links
-            if not ref_keys
-            or (item.from_ref.object_type, item.from_ref.object_id) in ref_keys
-            or (item.to_ref.object_type, item.to_ref.object_id) in ref_keys
+            if (
+                not ref_keys
+                or (item.from_ref.object_type, item.from_ref.object_id) in ref_keys
+                or (item.to_ref.object_type, item.to_ref.object_id) in ref_keys
+            )
+            and _visible(item, user_id, session_id, visible_session_scopes)
         ]
         return items[:limit]
 
@@ -868,14 +983,20 @@ class _NormalizedFixtureRepository:
         self,
         target_refs: list[PersistentObjectRef] | None = None,
         limit: int | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        visible_session_scopes: list[dict[str, Any]] | None = None,
     ) -> list[PersistentTimeLink]:
         ref_keys = {
             (ref.object_type, ref.object_id) for ref in target_refs or []
         }
         items = [
             item for item in self.bundle.time_links
-            if not ref_keys
-            or (item.target_ref.object_type, item.target_ref.object_id) in ref_keys
+            if (
+                not ref_keys
+                or (item.target_ref.object_type, item.target_ref.object_id) in ref_keys
+            )
+            and _visible(item, user_id, session_id, visible_session_scopes)
         ]
         return items[:limit]
 

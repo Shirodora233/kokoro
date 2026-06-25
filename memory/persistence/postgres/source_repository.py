@@ -18,14 +18,15 @@ class PostgresMemorySourceRepository:
         object_id: str,
         source_refs: Sequence[PersistentSourceRef],
     ) -> None:
-        connection.execute(
-            """
-            DELETE FROM memory_sources
-            WHERE object_id = %s
-            """,
-            (object_id,),
-        )
+        # Merge semantics: dedupe incoming refs by (source_type, source_id),
+        # then upsert. Existing refs with different (source_type, source_id)
+        # pairs are preserved — only exact matches are updated.
+        deduped: dict[tuple[str, str], PersistentSourceRef] = {}
         for source_ref in source_refs:
+            key = (source_ref.source_type, source_ref.source_id)
+            deduped[key] = source_ref  # last write wins for same key
+
+        for source_ref in deduped.values():
             connection.execute(
                 """
                 INSERT INTO memory_sources (
@@ -33,6 +34,12 @@ class PostgresMemorySourceRepository:
                     quote, span_start, span_end, metadata
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (object_id, source_type, source_id)
+                DO UPDATE SET
+                    quote = EXCLUDED.quote,
+                    span_start = EXCLUDED.span_start,
+                    span_end = EXCLUDED.span_end,
+                    metadata = EXCLUDED.metadata
                 """,
                 (
                     new_source_id(),

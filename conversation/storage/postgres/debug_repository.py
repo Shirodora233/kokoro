@@ -359,5 +359,37 @@ def _json_ready(row: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+    def delete_traces_by_session_id(self, session_id: str) -> int:
+        with self.database.connect() as connection:
+            result = connection.execute(
+                """
+                DELETE FROM conversation_memory_debug_traces
+                WHERE session_id = %s
+                """,
+                (session_id,),
+            )
+            return result.rowcount
+
+    def delete_traces_by_user_id(self, user_id: str) -> int:
+        with self.database.connect() as connection:
+            result = connection.execute(
+                """
+                DELETE FROM conversation_memory_debug_traces
+                WHERE session_id IN (
+                    SELECT id FROM sessions WHERE user_id = %s
+                )
+                """,
+                (user_id,),
+            )
+            return result.rowcount
+
+    def delete_all_traces(self) -> int:
+        with self.database.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM conversation_memory_debug_traces"
+            )
+            return result.rowcount
+
+
 def _placeholders(values: Sequence[object]) -> str:
     return ", ".join(["%s"] * len(values))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Sequence
 
 from ....models import MemoryRetrievalRequest, MemorySearchHit
@@ -84,8 +84,19 @@ class NormalizedMemoryHydrator:
 
         event_ids = _ids(events_by_id.keys())
         entity_ids = _ids(entities_by_id.keys())
-        descriptions = self.repository.list_descriptions(event_ids=event_ids)
-        properties = self.repository.list_properties(entity_ids=entity_ids)
+        visible_session_scopes = _visible_session_scopes(request)
+        descriptions = self.repository.list_descriptions(
+            event_ids=event_ids,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            visible_session_scopes=visible_session_scopes,
+        )
+        properties = self.repository.list_properties(
+            entity_ids=entity_ids,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            visible_session_scopes=visible_session_scopes,
+        )
         descriptions = _merge_descriptions(seed_descriptions, descriptions)
         properties = _merge_properties(seed_properties, properties)
 
@@ -97,6 +108,8 @@ class NormalizedMemoryHydrator:
             object_refs=[*event_refs, *entity_refs],
             user_id=request.user_id,
             limit=pool_limit * 4,
+            session_id=request.session_id,
+            visible_session_scopes=visible_session_scopes,
         )
 
         self._hydrate_linked_entities(links, entities_by_id)
@@ -105,9 +118,19 @@ class NormalizedMemoryHydrator:
         all_entity_ids = _ids(entities_by_id.keys())
         all_event_ids = _ids(events_by_id.keys())
         if set(all_entity_ids) != set(entity_ids):
-            properties = self.repository.list_properties(entity_ids=all_entity_ids)
+            properties = self.repository.list_properties(
+                entity_ids=all_entity_ids,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                visible_session_scopes=visible_session_scopes,
+            )
         if set(all_event_ids) != set(event_ids):
-            descriptions = self.repository.list_descriptions(event_ids=all_event_ids)
+            descriptions = self.repository.list_descriptions(
+                event_ids=all_event_ids,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                visible_session_scopes=visible_session_scopes,
+            )
 
         descriptions_by_event = _group_by_event(descriptions)
         properties_by_entity = _group_by_entity(properties)
@@ -122,6 +145,9 @@ class NormalizedMemoryHydrator:
         time_links = self.repository.list_time_links(
             target_refs=target_refs,
             limit=pool_limit * 6,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            visible_session_scopes=visible_session_scopes,
         )
         time_ref_ids = _ids(time_link.time_ref_id for time_link in time_links)
         time_refs = {
@@ -240,6 +266,16 @@ class NormalizedMemoryHydrator:
             PersistentObjectRef("property", item.id) for item in properties if item.id
         )
         return refs
+
+
+def _visible_session_scopes(
+    request: MemoryRetrievalRequest,
+) -> list[Mapping[str, object]]:
+    raw = request.metadata.get("visible_session_scopes")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, Mapping)]
+
 
 
 def _group_by_event(

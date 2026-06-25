@@ -27,3 +27,15 @@ class ChatClient(Protocol):
         temperature: float | None = None,
     ) -> ChatCompletionResult:
         """Generate one assistant message from normalized chat messages."""
+
+
+class EmbeddingClient(Protocol):
+    """Generate embedding vectors for input texts."""
+
+    def embed(
+        self,
+        texts: list[str],
+        model: str | None = None,
+    ) -> list[list[float]]:
+        """Return embedding vectors, one per input text."""
+        ...

@@ -780,3 +780,30 @@ CREATE INDEX IF NOT EXISTS idx_memory_sources_object
   ON memory_sources(object_id);
 CREATE INDEX IF NOT EXISTS idx_memory_sources_source
   ON memory_sources(source_type, source_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_sources_unique_ref
+  ON memory_sources(object_id, source_type, source_id);
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_available_extensions WHERE name = 'vector'
+  ) THEN
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    CREATE TABLE IF NOT EXISTS memory_object_embeddings (
+        object_id TEXT NOT NULL REFERENCES memory_objects(id) ON DELETE CASCADE,
+        embedding vector(1536) NOT NULL,
+        model TEXT NOT NULL DEFAULT 'text-embedding-3-small',
+        searchable_text TEXT NOT NULL,
+        generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (object_id, model)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_object_embeddings_vector
+        ON memory_object_embeddings USING ivfflat (embedding vector_cosine_ops)
+        WITH (lists = 100);
+
+    CREATE INDEX IF NOT EXISTS idx_memory_object_embeddings_model
+        ON memory_object_embeddings(model);
+  END IF;
+END $$;

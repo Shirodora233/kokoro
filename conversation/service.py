@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from llm.config import LLMConfig
+from llm.embedding import OpenAIEmbeddingClient
 from llm.interfaces import ChatClient, ChatMessageParam
 from llm.openai_client import OpenAIChatClient
 from memory import (
@@ -33,10 +34,12 @@ from memory import (
     MemoryTurnResult,
     MemoryTurnSnapshot,
     NormalizedMemoryContextRetriever,
+    PostgresHybridMemorySearch,
     PostgresNormalizedMemorySearch,
     MemoryRuntime,
     PersistentMemoryWritePlanApplier,
 )
+from memory.embedding import MemoryEmbeddingService
 
 from .config import ConversationRuntimeConfig, StorageConfig
 from .context import ModelContext, PaginatedMessages, SessionManager
@@ -63,6 +66,7 @@ class ConversationService:
         config: LLMConfig,
         memory_system: MemorySystem | None = None,
         memory_debug_service: MemoryDebugService | None = None,
+        persistent_memory_repository: object | None = None,
         timezone: str = "UTC",
     ) -> None:
         self.store = store
@@ -74,6 +78,7 @@ class ConversationService:
             memory_debug_service
             or self._default_memory_debug_service(self.memory_system)
         )
+        self.persistent_memory_repository = persistent_memory_repository
         self.timezone = timezone
 
     @classmethod
@@ -92,11 +97,46 @@ class ConversationService:
         persistent_repository = PostgresPersistentMemoryRepository(
             storage_config.database_url
         )
+
+        # Create shared embedding client (reused by both write and search paths)
+        embedding_client: object | None = None
+        if memory_config.embedding_enabled or memory_config.embedding_search_enabled:
+            embedding_client = OpenAIEmbeddingClient(config)
+
+        # Wire embedding service if enabled
+        if memory_config.embedding_enabled:
+            embedding_service = MemoryEmbeddingService(
+                embedding_client=embedding_client,
+                database_url=storage_config.database_url,
+                model=memory_config.embedding_model,
+                dimensions=memory_config.embedding_dimensions,
+                batch_size=memory_config.embedding_batch_size,
+            )
+            persistent_repository.embedding_service = embedding_service
+
+        # Choose search implementation
+        if memory_config.embedding_search_enabled:
+            search = PostgresHybridMemorySearch(
+                repository=persistent_repository,
+                embedding_client=embedding_client,
+                embedding_model=memory_config.embedding_model,
+                fusion_method=memory_config.embedding_fusion_method,
+                vector_weight=memory_config.embedding_vector_weight,
+                min_similarity=memory_config.embedding_min_similarity,
+            )
+        else:
+            search = PostgresNormalizedMemorySearch(
+                persistent_repository,
+                use_trigram=memory_config.search_use_trigram,
+                require_all_terms=memory_config.search_require_all_terms,
+                min_term_length=memory_config.search_min_term_length,
+            )
+
         memory_write_applier = PersistentMemoryWritePlanApplier(persistent_repository)
         memory_context_retriever: MemoryContextRetriever = (
             NormalizedMemoryContextRetriever(
                 persistent_repository,
-                search=PostgresNormalizedMemorySearch(persistent_repository),
+                search=search,
             )
         )
         chat_client = OpenAIChatClient(config)
@@ -155,6 +195,7 @@ class ConversationService:
             config=config,
             memory_system=memory_system,
             memory_debug_service=memory_debug_service,
+            persistent_memory_repository=persistent_repository,
             timezone=runtime_config.timezone,
         )
 
@@ -180,7 +221,11 @@ class ConversationService:
         temperature: float | None = None,
         max_context_messages: int | None = None,
         metadata: dict[str, Any] | None = None,
+        incognito: bool = False,
     ) -> ChatSession:
+        session_metadata = dict(metadata or {})
+        if incognito:
+            session_metadata["incognito"] = True
         session = ChatSession.create(
             user_id=user_id,
             title=title,
@@ -188,7 +233,7 @@ class ConversationService:
             model=model,
             temperature=temperature,
             max_context_messages=max_context_messages,
-            metadata=metadata,
+            metadata=session_metadata,
         )
         return self.store.create_session(session)
 
@@ -206,13 +251,20 @@ class ConversationService:
 
     def delete_session(self, session_id: str) -> dict[str, int]:
         self._require_session(session_id, allow_archived=True)
-        return self.store.delete_session(session_id)
+        result = self.store.delete_session(session_id)
+        # Cascade: tombstone memory objects + clear active cache
+        self._cascade_session_memory_cleanup(session_id)
+        return result
 
     def delete_user(self, user_id: str, cascade: bool = False) -> dict[str, int]:
         user = self.store.get_user(user_id)
         if not user:
             raise ValueError(f"Unknown user_id: {user_id}")
-        return self.store.delete_user(user_id=user_id, cascade=cascade)
+        session_ids = self._user_session_ids(user_id)
+        result = self.store.delete_user(user_id=user_id, cascade=cascade)
+        if cascade:
+            self._cascade_user_memory_cleanup(user_id, session_ids)
+        return result
 
     def delete_user_by_username(
         self,
@@ -225,7 +277,9 @@ class ConversationService:
         return self.delete_user(user.id, cascade=cascade)
 
     def delete_all(self) -> dict[str, int]:
-        return self.store.delete_all()
+        result = self.store.delete_all()
+        self._cascade_all_memory_cleanup()
+        return result
 
     def send_message(
         self,
@@ -234,6 +288,7 @@ class ConversationService:
         user_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        do_not_remember: bool = False,
     ) -> tuple[Message, Message]:
         session = self._require_session(session_id)
         author_id = user_id or session.user_id
@@ -245,6 +300,7 @@ class ConversationService:
             user_id=author_id,
             metadata=metadata,
             idempotency_key=idempotency_key,
+            do_not_remember=do_not_remember,
         )
 
     def _send_checkpointed_message(
@@ -254,6 +310,7 @@ class ConversationService:
         user_id: str,
         metadata: dict[str, Any] | None,
         idempotency_key: str | None,
+        do_not_remember: bool = False,
     ) -> tuple[Message, Message]:
         if idempotency_key:
             existing_turn = self.store.checkpoints.get_turn_by_idempotency_key(
@@ -288,6 +345,8 @@ class ConversationService:
                 session,
                 user_message,
                 include_unpersisted_user_message=True,
+                do_not_remember=do_not_remember
+                or self._session_is_incognito(session),
             )
             self._apply_memory_context_actions(memory_prepare.context_actions)
             llm_messages = self._build_llm_context_for_pending_user(
@@ -335,6 +394,7 @@ class ConversationService:
 
         memory_status = "not_run"
         memory_commit: MemoryTurnResult | None = None
+        memory_repository_wrapper = None
         debug_trace_id = memory_prepare.metadata.get("debug_trace_id")
         with self.store.database.connect() as connection:
             try:
@@ -427,11 +487,12 @@ class ConversationService:
                                     "PostgreSQL memory commit requires "
                                     "PersistentMemoryWritePlanApplier"
                                 )
+                            memory_repository_wrapper = _ConnectionPersistentMemoryRepository(
+                                base_applier.repository,
+                                connection,
+                            )
                             write_applier = PersistentMemoryWritePlanApplier(
-                                _ConnectionPersistentMemoryRepository(
-                                    base_applier.repository,
-                                    connection,
-                                ),
+                                memory_repository_wrapper,
                                 adapter=base_applier.adapter,
                             )
                             memory_commit = self.memory_system.commit_turn_with_writers(
@@ -510,6 +571,8 @@ class ConversationService:
             except Exception:
                 self._restore_active_context(memory_prepare.snapshot)
                 raise
+        if memory_status == "committed" and memory_repository_wrapper is not None:
+            memory_repository_wrapper.generate_pending_embeddings()
         self._apply_memory_context_actions(
             memory_commit.context_actions if memory_commit is not None else []
         )
@@ -639,6 +702,90 @@ class ConversationService:
             page_size=page_size,
         )
 
+    # ----------------------------------------------------------------
+    # User-facing memory management
+    # ----------------------------------------------------------------
+
+    def list_memories(
+        self,
+        username: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        memory_type: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List active memories for a user or session (user-facing API)."""
+        resolved_user_id = self._resolve_memory_user_id(
+            username=username,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if resolved_user_id is None:
+            raise ValueError("username, user_id, or session_id is required")
+        repository = self.persistent_memory_repository
+        if repository is None or not hasattr(repository, "list_user_memories"):
+            return {"memories": [], "count": 0}
+        memories = repository.list_user_memories(
+            resolved_user_id,
+            memory_type=memory_type,
+            limit=limit,
+        )
+        # Filter by session if requested
+        if session_id:
+            memories = [
+                m for m in memories
+                if m.get("session_id") == session_id
+            ]
+        return {"memories": memories, "count": len(memories)}
+
+    def get_memory_detail(self, memory_id: str) -> dict[str, Any]:
+        """Get detailed info for a single memory (user-facing API)."""
+        repository = self.persistent_memory_repository
+        if repository is None or not hasattr(repository, "get_user_memory_detail"):
+            raise ValueError("Memory repository does not support detail lookup")
+        detail = repository.get_user_memory_detail(memory_id)
+        if detail is None:
+            raise ValueError(f"Unknown memory_id: {memory_id}")
+        return detail
+
+    def forget_memory(self, memory_id: str) -> dict[str, Any]:
+        """Forget (tombstone) a single memory by id."""
+        repository = self.persistent_memory_repository
+        if repository is None or not hasattr(repository, "forget_memory"):
+            raise ValueError("Memory repository does not support forget")
+        ok = repository.forget_memory(memory_id)
+        # Clear from active cache if present
+        self._evict_from_active_cache(memory_id)
+        return {"forgotten": ok, "memory_id": memory_id}
+
+    def _resolve_memory_user_id(
+        self,
+        username: str | None,
+        user_id: str | None,
+        session_id: str | None,
+    ) -> str | None:
+        if user_id:
+            return user_id
+        if username:
+            user = self.store.find_user_by_username(username)
+            return user.id if user else None
+        if session_id:
+            session = self.store.get_session(session_id)
+            return session.user_id if session else None
+        return None
+
+    def _evict_from_active_cache(self, memory_id: str) -> None:
+        """Best-effort removal of a memory id from all active-cache entries."""
+        active_cache = getattr(self.memory_system, "active_cache", None)
+        if active_cache is None:
+            return
+        try:
+            # We can't enumerate all user/session keys efficiently,
+            # so mark the id as evicted via a metadata-based approach.
+            active_cache.evict_record_id(memory_id)
+        except Exception:
+            pass
+
     def get_memory_debug_snapshot(
         self,
         username: str | None = None,
@@ -731,11 +878,13 @@ class ConversationService:
         session: ChatSession,
         user_message: Message,
         include_unpersisted_user_message: bool = False,
+        do_not_remember: bool = False,
     ) -> MemoryTurnPrepareResult:
         turn = self._build_memory_turn_input(
             session,
             user_message,
             include_unpersisted_user_message=include_unpersisted_user_message,
+            do_not_remember=do_not_remember,
         )
         try:
             return self.memory_system.prepare_turn(turn)
@@ -758,6 +907,7 @@ class ConversationService:
         session: ChatSession,
         user_message: Message,
         include_unpersisted_user_message: bool = False,
+        do_not_remember: bool = False,
     ) -> MemoryTurnInput:
         messages = self.store.list_messages(session.id)
         if include_unpersisted_user_message:
@@ -785,8 +935,14 @@ class ConversationService:
             active_memory_context=active_memory_context,
             metadata={
                 "visible_session_scopes": self._visible_session_scopes(session.id),
+                "memory_skip_extraction": do_not_remember,
             },
         )
+
+    def _session_is_incognito(self, session: ChatSession) -> bool:
+        """Check whether the session-level incognito flag is set."""
+        raw = session.metadata.get("incognito")
+        return bool(raw) if isinstance(raw, bool) else False
 
     def _to_memory_input_message(self, message: Message) -> MemoryInputMessage:
         return MemoryInputMessage(
@@ -863,6 +1019,116 @@ class ConversationService:
         total_messages: int,
     ) -> int:
         return min(max(0, context_start_index), total_messages)
+
+    def _cascade_session_memory_cleanup(self, session_id: str) -> None:
+        """Tombstone memory objects + clear active cache for a deleted session."""
+        # Clear process-local active cache for this session
+        active_cache = getattr(self.memory_system, "active_cache", None)
+        if active_cache is not None:
+            session = self.store.get_session(session_id)
+            user_id = session.user_id if session else None
+            active_cache.remove(user_id=user_id, session_id=session_id)
+        # Tombstone persistent memory
+        repository = self.persistent_memory_repository
+        if (
+            repository is not None
+            and hasattr(repository, "tombstone_by_session_id")
+        ):
+            try:
+                count = repository.tombstone_by_session_id(session_id)
+                LOGGER.info(
+                    "Tombstoned %d memory objects for deleted session %s",
+                    count,
+                    session_id,
+                )
+            except Exception:
+                LOGGER.warning(
+                    "Memory tombstone failed for deleted session %s",
+                    session_id,
+                    exc_info=True,
+                )
+        # Delete debug traces
+        if hasattr(self.store, "debug"):
+            try:
+                self.store.debug.delete_traces_by_session_id(session_id)
+            except Exception:
+                LOGGER.warning(
+                    "Debug trace deletion failed for session %s",
+                    session_id,
+                    exc_info=True,
+                )
+
+    def _cascade_user_memory_cleanup(
+        self,
+        user_id: str,
+        session_ids: list[str],
+    ) -> None:
+        """Tombstone memory objects + clear active cache for a deleted user."""
+        active_cache = getattr(self.memory_system, "active_cache", None)
+        if active_cache is not None:
+            active_cache.remove_by_user_id(user_id)
+        repository = self.persistent_memory_repository
+        if (
+            repository is not None
+            and hasattr(repository, "tombstone_by_user_id")
+        ):
+            try:
+                count = repository.tombstone_by_user_id(user_id)
+                LOGGER.info(
+                    "Tombstoned %d memory objects for deleted user %s",
+                    count,
+                    user_id,
+                )
+            except Exception:
+                LOGGER.warning(
+                    "Memory tombstone failed for deleted user %s",
+                    user_id,
+                    exc_info=True,
+                )
+        if hasattr(self.store, "debug"):
+            try:
+                self.store.debug.delete_traces_by_user_id(user_id)
+            except Exception:
+                LOGGER.warning(
+                    "Debug trace deletion failed for user %s",
+                    user_id,
+                    exc_info=True,
+                )
+
+    def _cascade_all_memory_cleanup(self) -> None:
+        """Hard-delete all memory data + clear active cache for nuke-everything."""
+        active_cache = getattr(self.memory_system, "active_cache", None)
+        if active_cache is not None:
+            active_cache.clear()
+        repository = self.persistent_memory_repository
+        if (
+            repository is not None
+            and hasattr(repository, "delete_all_memory")
+        ):
+            try:
+                counts = repository.delete_all_memory()
+                LOGGER.info("Deleted all memory data: %s", counts)
+            except Exception:
+                LOGGER.warning(
+                    "Memory delete_all failed",
+                    exc_info=True,
+                )
+        if hasattr(self.store, "debug"):
+            try:
+                self.store.debug.delete_all_traces()
+            except Exception:
+                LOGGER.warning(
+                    "Debug trace delete_all failed",
+                    exc_info=True,
+                )
+
+    def _user_session_ids(self, user_id: str) -> list[str]:
+        """Collect all session ids belonging to a user (before deletion)."""
+        try:
+            sessions = self.store.list_sessions(user_id=user_id)
+            return [session.id for session in sessions]
+        except Exception:
+            return []
 
     def _require_session(
         self,
@@ -1260,9 +1526,18 @@ class _ConnectionPersistentMemoryRepository:
     def __init__(self, repository: Any, connection: Any) -> None:
         self.repository = repository
         self.connection = connection
+        self._pending_embedding_bundles: list[Any] = []
 
     def save_bundle(self, bundle):
-        return self.repository.save_bundle_in_connection(self.connection, bundle)
+        result = self.repository.save_bundle_in_connection(self.connection, bundle)
+        if self.repository.embedding_service is not None:
+            self._pending_embedding_bundles.append(result)
+        return result
+
+    def generate_pending_embeddings(self) -> None:
+        for bundle in self._pending_embedding_bundles:
+            self.repository._maybe_generate_embeddings(bundle)
+        self._pending_embedding_bundles.clear()
 
     def __getattr__(self, name: str):
         return getattr(self.repository, name)

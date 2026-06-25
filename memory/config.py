@@ -50,6 +50,17 @@ class MemoryRuntimeConfig:
     debug_enabled: bool = True
     debug_max_traces: int = 50
     debug_max_raw_chars: int = 200_000
+    embedding_enabled: bool = False
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+    embedding_batch_size: int = 20
+    embedding_search_enabled: bool = False
+    embedding_fusion_method: str = "rrf"
+    embedding_vector_weight: float = 0.6
+    embedding_min_similarity: float = 0.7
+    search_min_term_length: int = 2
+    search_require_all_terms: bool = False
+    search_use_trigram: bool = True
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> "MemoryRuntimeConfig":
@@ -79,6 +90,40 @@ class MemoryRuntimeConfig:
         debug_max_raw_chars = int(
             read("MEMORY_DEBUG_MAX_RAW_CHARS", "200000") or "200000"
         )
+        embedding_enabled = _parse_bool(
+            read("MEMORY_EMBEDDING_ENABLED"), default=False
+        )
+        embedding_model = (
+            read("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small")
+            or "text-embedding-3-small"
+        )
+        embedding_dimensions = int(
+            read("MEMORY_EMBEDDING_DIMENSIONS", "1536") or "1536"
+        )
+        embedding_batch_size = int(
+            read("MEMORY_EMBEDDING_BATCH_SIZE", "20") or "20"
+        )
+        embedding_search_enabled = _parse_bool(
+            read("MEMORY_EMBEDDING_SEARCH_ENABLED"), default=False
+        )
+        embedding_fusion_method = (
+            read("MEMORY_EMBEDDING_FUSION_METHOD", "rrf") or "rrf"
+        ).strip().lower()
+        embedding_vector_weight = float(
+            read("MEMORY_EMBEDDING_VECTOR_WEIGHT", "0.6") or "0.6"
+        )
+        embedding_min_similarity = float(
+            read("MEMORY_EMBEDDING_MIN_SIMILARITY", "0.7") or "0.7"
+        )
+        search_min_term_length = int(
+            read("MEMORY_SEARCH_MIN_TERM_LENGTH", "2") or "2"
+        )
+        search_require_all_terms = _parse_bool(
+            read("MEMORY_SEARCH_REQUIRE_ALL_TERMS"), default=False
+        )
+        search_use_trigram = _parse_bool(
+            read("MEMORY_SEARCH_USE_TRIGRAM"), default=True
+        )
         return cls(
             extraction_enabled=enabled,
             extraction_model=model,
@@ -91,4 +136,15 @@ class MemoryRuntimeConfig:
             debug_enabled=debug_enabled,
             debug_max_traces=debug_max_traces,
             debug_max_raw_chars=debug_max_raw_chars,
+            embedding_enabled=embedding_enabled,
+            embedding_model=embedding_model,
+            embedding_dimensions=embedding_dimensions,
+            embedding_batch_size=embedding_batch_size,
+            embedding_search_enabled=embedding_search_enabled,
+            embedding_fusion_method=embedding_fusion_method,
+            embedding_vector_weight=embedding_vector_weight,
+            embedding_min_similarity=embedding_min_similarity,
+            search_min_term_length=search_min_term_length,
+            search_require_all_terms=search_require_all_terms,
+            search_use_trigram=search_use_trigram,
         )

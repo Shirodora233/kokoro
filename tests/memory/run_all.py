@@ -12,10 +12,12 @@ FAST_SUITES = [
     "tests.memory.reconciliation.runner",
     "tests.memory.writing.runner",
     "tests.memory.system.runner",
+    "tests.memory.embedding.runner",
 ]
 
 POSTGRES_SUITES = [
     "tests.memory.persistence.runner",
+    "tests.memory.search_hybrid.runner",
     "tests.conversation.checkpoint_runner",
 ]
 

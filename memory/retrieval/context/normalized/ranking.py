@@ -26,7 +26,21 @@ class NormalizedMemoryRanker:
         hits: Sequence[MemorySearchHit],
         request: MemorySearchRequest,
     ) -> list[MemorySearchHit]:
-        ranked = [self._rank_hit(hit, request) for hit in hits]
+        if not hits:
+            return []
+        # Normalize base scores to [0, 1] so ranker bonuses are consistent
+        # regardless of score source (lexical 0.85-1.30 vs RRF 0.016-0.032).
+        base_min = min(hit.score for hit in hits)
+        base_max = max(hit.score for hit in hits)
+        base_range = base_max - base_min or 1.0
+
+        def _normalize(raw: float) -> float:
+            return (raw - base_min) / base_range
+
+        ranked = [
+            self._rank_hit(hit, request, _normalize(hit.score))
+            for hit in hits
+        ]
         deduped = _dedupe_best_hit(ranked)
         return sorted(
             deduped,
@@ -41,10 +55,11 @@ class NormalizedMemoryRanker:
         self,
         hit: MemorySearchHit,
         request: MemorySearchRequest,
+        normalized_base: float,
     ) -> MemorySearchHit:
         metadata = dict(hit.metadata)
         components = {
-            "base": hit.score,
+            "base": round(normalized_base, 4),
             "match_quality": _match_quality_bonus(metadata.get("match_quality")),
             "scope": _scope_bonus(
                 request_user_id=request.user_id,
@@ -81,13 +96,15 @@ def _dedupe_best_hit(
 
 def _match_quality_bonus(value: object) -> float:
     if value == "exact":
-        return 0.3
+        return 0.06
     if value == "phrase":
-        return 0.18
-    if value == "all_terms":
-        return 0.1
-    if value == "term":
         return 0.04
+    if value == "all_terms":
+        return 0.02
+    if value == "semantic":
+        return 0.01
+    if value == "term":
+        return 0.005
     if value == "recent":
         return 0.0
     return 0.0
@@ -100,27 +117,27 @@ def _scope_bonus(
     hit_session_id: str | None,
 ) -> float:
     if request_session_id and hit_session_id == request_session_id:
-        return 0.2
-    if request_user_id and hit_user_id == request_user_id:
-        return 0.12
-    if hit_user_id is None and hit_session_id is None:
         return 0.04
+    if request_user_id and hit_user_id == request_user_id:
+        return 0.02
+    if hit_user_id is None and hit_session_id is None:
+        return 0.01
     return 0.0
 
 
 def _importance_bonus(value: object) -> float:
     if value == "high":
-        return 0.08
-    if value == "medium":
         return 0.03
+    if value == "medium":
+        return 0.01
     return 0.0
 
 
 def _confidence_bonus(value: object) -> float:
     if value == "high":
-        return 0.05
-    if value == "medium":
         return 0.02
+    if value == "medium":
+        return 0.005
     return 0.0
 
 
@@ -130,11 +147,11 @@ def _recency_bonus(value: object, now: datetime) -> float:
         return 0.0
     age_days = max(0.0, (now - updated_at).total_seconds() / 86400)
     if age_days <= 1:
-        return 0.08
+        return 0.03
     if age_days <= 7:
-        return 0.05
+        return 0.015
     if age_days <= 30:
-        return 0.02
+        return 0.005
     return 0.0
 
 
